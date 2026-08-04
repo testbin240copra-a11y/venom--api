@@ -36,11 +36,6 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
 ]
 
-# ===== متغيرات الكاش للـ 429 =====
-_site_429_cache = {}
-_site_429_cache_lock = threading.Lock()
-_SITE_429_TTL = 1800  # 30 دقيقة
-
 # ──────────────────────── Enums / Result types ───────────────────────
 
 class CheckStatus(Enum):
@@ -324,184 +319,56 @@ def to_float(v: Any) -> Tuple[float, bool]:
                 pass
     return 0, False
 
-# ===== دالة البحث عن المنتج الرئيسية =====
+# ──────────────────────── Step 0: cheapest product ───────────────────
+
+_product_cache: Dict[str, tuple] = {}
+_product_cache_lock = threading.Lock()
+_PRODUCT_CACHE_TTL  = 3600  # ساعة
 
 def find_cheapest_product(client: TLSClient, shop_url: str, min_price: float = 0.50) -> Tuple[str, str, str, str]:
-    """
-    تدور على منتج رخيص في الموقع من غير ما تجيب 429
-    """
-    # ===== 1. جرب تجيب من /collections/all (أسرع طريقة) =====
-    try:
-        result = _find_product_from_collections(client, shop_url, min_price)
-        if result:
-            return result
-    except:
-        pass
-    
-    # ===== 2. جرب تجيب من /search =====
-    try:
-        result = _find_product_from_search(client, shop_url, min_price)
-        if result:
-            return result
-    except:
-        pass
-    
-    # ===== 3. جرب تجيب من products.json (آخر حل) =====
-    try:
-        result = _find_product_from_products_json(client, shop_url, min_price)
-        if result:
-            return result
-    except Exception as e:
-        if "429" in str(e):
-            with _site_429_cache_lock:
-                _site_429_cache[shop_url] = _time.time()
-        raise e
-    
-    raise Exception(f"No available products above ${min_price:.2f} at {shop_url}")
+    now = _time.time()
+    with _product_cache_lock:
+        cached = _product_cache.get(shop_url)
+        if cached and now - cached[-1] < _PRODUCT_CACHE_TTL:
+            return cached[:-1]  # (title, product_id, variant_id, price_str)
 
-# ===== دوال مساعدة للبحث عن المنتج =====
-
-def _find_product_from_collections(client: TLSClient, shop_url: str, min_price: float = 0.50):
-    """جيب المنتج من /collections/all"""
-    try:
-        resp = client.get(f"{shop_url}/collections/all")
-        if resp.status_code != 200:
-            return None
-        
-        html = resp.text
-        product_links = re.findall(r'href="([^"]*\/products\/[^"]+)"', html)
-        
-        if not product_links:
-            return None
-        
-        for link in product_links[:5]:
-            try:
-                if not link.startswith('http'):
-                    link = shop_url + link
-                
-                resp = client.get(link)
-                if resp.status_code != 200:
-                    continue
-                
-                html = resp.text
-                
-                variant_match = re.search(r'"id"\s*:\s*"gid://shopify/ProductVariant/(\d+)"', html)
-                if not variant_match:
-                    continue
-                
-                variant_id = variant_match.group(1)
-                
-                price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html)
-                if price_match:
-                    price = float(price_match.group(1))
-                    if price >= min_price:
-                        product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html)
-                        product_id = product_match.group(1) if product_match else ""
-                        
-                        title_match = re.search(r'"title"\s*:\s*"([^"]+)"', html)
-                        title = title_match.group(1) if title_match else "Product"
-                        
-                        return title, product_id, variant_id, str(price)
-            except:
-                continue
-        
-        return None
-    except:
-        return None
-
-def _find_product_from_search(client: TLSClient, shop_url: str, min_price: float = 0.50):
-    """جيب المنتج من /search"""
-    try:
-        resp = client.get(f"{shop_url}/search?q=*")
-        if resp.status_code != 200:
-            return None
-        
-        html = resp.text
-        product_links = re.findall(r'href="([^"]*\/products\/[^"]+)"', html)
-        
-        if not product_links:
-            return None
-        
-        for link in product_links[:5]:
-            try:
-                if not link.startswith('http'):
-                    link = shop_url + link
-                
-                resp = client.get(link)
-                if resp.status_code != 200:
-                    continue
-                
-                html = resp.text
-                
-                variant_match = re.search(r'"id"\s*:\s*"gid://shopify/ProductVariant/(\d+)"', html)
-                if not variant_match:
-                    continue
-                
-                variant_id = variant_match.group(1)
-                
-                price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html)
-                if price_match:
-                    price = float(price_match.group(1))
-                    if price >= min_price:
-                        product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html)
-                        product_id = product_match.group(1) if product_match else ""
-                        
-                        title_match = re.search(r'"title"\s*:\s*"([^"]+)"', html)
-                        title = title_match.group(1) if title_match else "Product"
-                        
-                        return title, product_id, variant_id, str(price)
-            except:
-                continue
-        
-        return None
-    except:
-        return None
-
-def _find_product_from_products_json(client: TLSClient, shop_url: str, min_price: float = 0.50):
-    """جيب المنتج من products.json (آخر حل)"""
     best_price = float('inf')
-    product_title = ""
-    product_id = ""
-    variant_id = ""
-    price_str = ""
-    
-    # ===== جيب صفحة واحدة بس بحد 5 منتجات =====
-    resp = client.get(f"{shop_url}/products.json?limit=5&page=1")
-    
-    if resp.status_code == 429:
-        raise Exception("GET products.json returned 429")
-    
-    if resp.status_code != 200:
-        raise Exception(f"GET products.json returned {resp.status_code}")
-    
-    try:
+    product_title = product_id = variant_id = price_str = ""
+
+    page = 1
+    while True:
+        resp = client.get(f"{shop_url}/products.json?limit=250&page={page}")
+        if resp.status_code != 200:
+            raise Exception(f"GET products.json page {page} returned {resp.status_code}")
+
         products = resp.json().get("products", [])
-    except:
-        raise Exception("products.json returned non-json")
-    
-    if not products:
-        raise Exception(f"No products found at {shop_url}")
-    
-    for p in products:
-        for v in p.get("variants", []):
-            if not v.get("available", False):
-                continue
-            try:
-                price = float(v.get("price") or 0)
-            except (ValueError, TypeError):
-                continue
-            if price < min_price:
-                continue
-            if price < best_price:
-                best_price = price
-                product_title = p.get("title", "")
-                product_id = str(p.get("id", ""))
-                variant_id = str(v.get("id", ""))
-                price_str = v.get("price", "")
-    
+        if not products:
+            break
+
+        for p in products:
+            for v in p.get("variants", []):
+                if not v.get("available", False):
+                    continue
+                try:
+                    price = float(v.get("price") or 0)
+                except (ValueError, TypeError):
+                    continue
+                if price < min_price:
+                    continue
+                if price < best_price:
+                    best_price    = price
+                    product_title = p.get("title", "")
+                    product_id    = str(p.get("id", ""))
+                    variant_id    = str(v.get("id", ""))
+                    price_str     = v.get("price", "")
+        page += 1
+
     if not product_title:
         raise Exception(f"No available products above ${min_price:.2f} at {shop_url}")
-    
+
+    with _product_cache_lock:
+        _product_cache[shop_url] = (product_title, product_id, variant_id, price_str, now)
+
     return product_title, product_id, variant_id, price_str
 
 # ──────────────────────── Step 1: cart → checkout ────────────────────
@@ -775,6 +642,8 @@ def extract_total_from_rejected(submit_json: str) -> str:
         return ""
 
 def extract_receipt_id(submit_body: str) -> str:
+    # Match any Shopify receipt GID (ProcessedReceipt, ProcessingReceipt, etc.)
+    # Receipt IDs can be numeric or hex hashes
     match = re.search(r'"id"\s*:\s*"(gid://shopify/\w+Receipt/[A-Za-z0-9]+)"', submit_body)
     return match.group(1) if match else ""
 
@@ -787,6 +656,18 @@ def extract_payment_method_id(proposal_body: str) -> str:
     return match.group(1) if match else ""
 
 def extract_payment_gateways(proposal_body: str) -> list[dict]:
+    """Extract payment gateways from Shopify checkout negotiate/proposal JSON response.
+
+    Pass the raw response body from send_proposal / send_proposal2 / send_proposal3
+    (after address is filled — payment lines are populated on later proposals).
+
+    JSON path:
+      data.session.negotiate.result.sellerProposal.payment.availablePaymentLines[]
+        .paymentMethod
+
+    Card processor entries use __typename == "PaymentProvider".
+    Wallets (Shop Pay, Apple Pay, etc.) are separate lines in the same array.
+    """
     try:
         seller = (json.loads(proposal_body)
                       .get("data", {})
@@ -855,6 +736,7 @@ def extract_receipt_status_code(poll_body: str, receipt_type: str) -> str:
     return "UNKNOWN"
 
 def detect_shipping_restriction(proposal_body: str) -> bool:
+    """Return True if the proposal response indicates this address cannot receive shipping."""
     restriction_signals = [
         "SHIPPING_ADDRESS_UNDELIVERABLE",
         "no_delivery_options_available",
@@ -872,6 +754,7 @@ def patch_payload(payload: str, currency: str, country: str) -> str:
         payload = payload.replace('"currencyCode": "USD"',        f'"currencyCode": "{currency}"')
         payload = payload.replace('"presentmentCurrency": "USD"', f'"presentmentCurrency": "{currency}"')
     if country != "US":
+        # Only patch buyerIdentity countryCode — leave billing/shipping address countryCode alone
         payload = payload.replace(
             '"presentmentCurrency": "USD",\n      "countryCode": "US"',
             f'"presentmentCurrency": "USD",\n      "countryCode": "{country}"'
@@ -924,6 +807,7 @@ def send_pci_session(ident_sig: str, card_number: str, card_name: str,
         "user-agent":           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36 Edg/146.0.0.0",
     }
 
+    # Use curl_cffi with impersonation — consistent with TLSClient
     with Session(impersonate=random.choice(BROWSER_PROFILES)) as session:
         if proxy_url:
             session.proxies = {"http": proxy_url, "https": proxy_url}
@@ -1567,10 +1451,10 @@ def run_check(client: TLSClient, shop_url: str, site_name: str,
               email: str, card_number: str, card_month: int, card_year: int, card_cvv: str,
               proxy_url: str = "", currency: str = "USD", country: str = "US") -> CheckResult:
 
-    result = CheckResult(card=card_number, status=CheckStatus.ERROR)
-    result.shop_url = shop_url
+    result          = CheckResult(card=card_number, status=CheckStatus.ERROR)
+    result.shop_url  = shop_url
     result.site_name = site_name
-    result.currency = currency
+    result.currency  = currency
 
     try:
         # ── Step 0: cheapest product ──────────────────────────────────
@@ -1618,7 +1502,7 @@ def run_check(client: TLSClient, shop_url: str, site_name: str,
                 raise Exception("missing Proposal or Submit ID")
             poll_for_receipt_id = extract_poll_for_receipt_id(js_body)
             if not poll_for_receipt_id:
-                poll_for_receipt_id = "978b340f3027dc55313349c4089004147b6b0dccee75e42ed97685ef1feae418"
+                poll_for_receipt_id = "978b340f3027dc55313349c4089004147b6b0dccee75e42ed97685ef1feae418"  # fallback
         except Exception as e:
             result.retryable = True
             result.error = Exception(f"Step 3 failed: {e}")
@@ -1664,6 +1548,7 @@ def run_check(client: TLSClient, shop_url: str, site_name: str,
             return result
 
         # ── Step 6: Proposal 3 (address) — with shipping fallback ─────
+        # Try US first, then fall back to other countries if store doesn't ship to US
         addr              = address_for_country(country if country != "US" else "US")
         tried_countries   = [addr.country_code]
         fallback_addrs    = get_fallback_addresses(addr.country_code)
@@ -1684,17 +1569,20 @@ def run_check(client: TLSClient, shop_url: str, site_name: str,
 
                 is_digital = not extract_is_shipping_required(p3_body)
 
+                # For digital products, no shipping needed — skip fallback loop
                 if is_digital:
                     final_proposal_body = p3_body
                     final_queue_token   = q3
                     break
 
+                # Check if this address is rejected for shipping
                 if detect_shipping_restriction(p3_body) and fallback_idx < len(fallback_addrs):
                     addr          = fallback_addrs[fallback_idx]
                     fallback_idx += 1
-                    queue_token2  = q3
+                    queue_token2  = q3  # advance queue token
                     continue
 
+                # Address accepted — do one extra poll to get signed handles if needed
                 signed_check = extract_signed_handles(p3_body)
                 if not signed_check:
                     time.sleep(0.05)
@@ -1787,8 +1675,9 @@ def run_check(client: TLSClient, shop_url: str, site_name: str,
                     time.sleep(0.05)
                     continue
 
-                break
+                break  # clean exit
 
+            # Check for errors in submit response
             check_submit_errors(submit_status, submit_body)
 
             receipt_id = extract_receipt_id(submit_body)
@@ -2073,8 +1962,6 @@ def find_working_proxies(proxies: List[str]) -> List[str]:
 
 # ──────────────────────── Main checkout function ──────────────────────
 
-# ... باقي الكود زي ما هو ...
-
 def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -> CheckResult:
     """Enhanced version with random browser fingerprints and addresses, with shipping fallback."""
     currency = "USD"
@@ -2302,7 +2189,7 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
             if not total_amount:
                 raise Exception("Step 10 failed: could not extract total amount")
             result.amount = total_amount
-            
+
             attempt_token = generate_attempt_token(checkout_token)
             
             current_tax    = extract_tax_amount(final_proposal_body)
