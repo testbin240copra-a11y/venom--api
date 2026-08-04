@@ -324,7 +324,7 @@ _product_cache: Dict[str, tuple] = {}
 _product_cache_lock = threading.Lock()
 _PRODUCT_CACHE_TTL  = 3600
 
-def find_cheapest_product(client: TLSClient, shop_url: str, min_price: float = 0.50) -> Tuple[str, str, str, str]:
+def find_cheapest_product(client: TLSClient, shop_url: str, min_price: float = 0.50, max_retries: int = 3) -> Tuple[str, str, str, str]:
     now = _time.time()
     with _product_cache_lock:
         cached = _product_cache.get(shop_url)
@@ -335,32 +335,50 @@ def find_cheapest_product(client: TLSClient, shop_url: str, min_price: float = 0
     product_title = product_id = variant_id = price_str = ""
 
     page = 1
+    retry_count = 0
     while True:
-        resp = client.get(f"{shop_url}/products.json?limit=250&page={page}")
-        if resp.status_code != 200:
-            raise Exception(f"GET products.json page {page} returned {resp.status_code}")
+        try:
+            resp = client.get(f"{shop_url}/products.json?limit=250&page={page}")
+            
+            if resp.status_code == 429:
+                retry_count += 1
+                if retry_count > max_retries:
+                    raise Exception(f"returned 429 after {max_retries} retries")
+                wait_time = 2 ** retry_count  # 2, 4, 8 ثواني
+                time.sleep(wait_time)
+                continue
+                
+            if resp.status_code != 200:
+                raise Exception(f"GET products.json page {page} returned {resp.status_code}")
+            
+            retry_count = 0  # Reset on success
+            
+            products = resp.json().get("products", [])
+            if not products:
+                break
 
-        products = resp.json().get("products", [])
-        if not products:
-            break
-
-        for p in products:
-            for v in p.get("variants", []):
-                if not v.get("available", False):
-                    continue
-                try:
-                    price = float(v.get("price") or 0)
-                except (ValueError, TypeError):
-                    continue
-                if price < min_price:
-                    continue
-                if price < best_price:
-                    best_price    = price
-                    product_title = p.get("title", "")
-                    product_id    = str(p.get("id", ""))
-                    variant_id    = str(v.get("id", ""))
-                    price_str     = v.get("price", "")
-        page += 1
+            for p in products:
+                for v in p.get("variants", []):
+                    if not v.get("available", False):
+                        continue
+                    try:
+                        price = float(v.get("price") or 0)
+                    except (ValueError, TypeError):
+                        continue
+                    if price < min_price:
+                        continue
+                    if price < best_price:
+                        best_price = price
+                        product_title = p.get("title", "")
+                        product_id = str(p.get("id", ""))
+                        variant_id = str(v.get("id", ""))
+                        price_str = v.get("price", "")
+            page += 1
+            
+        except Exception as e:
+            if "429" in str(e) and retry_count <= max_retries:
+                continue
+            raise
 
     if not product_title:
         raise Exception(f"No available products above ${min_price:.2f} at {shop_url}")
@@ -1226,6 +1244,13 @@ def check_submit_errors(status: int, body: str):
 # ???????????????????????? Main checkout function ??????????????????????
 
 def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -> CheckResult:
+# في بداية الدالة
+import random
+import time
+
+# بعد استخراج client
+time.sleep(random.uniform(0.5, 1.5))  # تأخير عشوائي 0.5-1.5 ثانية
+
     currency = "USD"
     country = "US"
     site_name = shop_url.replace("https://", "").replace("http://", "")
