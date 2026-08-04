@@ -2073,6 +2073,8 @@ def find_working_proxies(proxies: List[str]) -> List[str]:
 
 # ──────────────────────── Main checkout function ──────────────────────
 
+# ... باقي الكود زي ما هو ...
+
 def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -> CheckResult:
     """Enhanced version with random browser fingerprints and addresses, with shipping fallback."""
     currency = "USD"
@@ -2299,7 +2301,9 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
                 total_amount = extract_running_total(final_proposal_body)
             if not total_amount:
                 raise Exception("Step 10 failed: could not extract total amount")
-            result.amount = total_amount            attempt_token = generate_attempt_token(checkout_token)
+            result.amount = total_amount
+            
+            attempt_token = generate_attempt_token(checkout_token)
             
             current_tax    = extract_tax_amount(final_proposal_body)
             current_total  = total_amount
