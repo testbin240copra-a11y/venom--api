@@ -1244,9 +1244,6 @@ def check_submit_errors(status: int, body: str):
 # ???????????????????????? Main checkout function ??????????????????????
 
 def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -> CheckResult:
-# في بداية الدالة
-import random
-import time
 
 # بعد استخراج client
 time.sleep(random.uniform(0.5, 1.5))  # تأخير عشوائي 0.5-1.5 ثانية
@@ -1268,7 +1265,7 @@ time.sleep(random.uniform(0.5, 1.5))  # تأخير عشوائي 0.5-1.5 ثاني
     except Exception as e:
         result.error = e
         return result
-    
+    time.sleep(random.uniform(0.5, 1.5))  # 
     email = generate_random_email()
     impersonate = random.choice(BROWSER_PROFILES)
     user_agent = random.choice(USER_AGENTS)
