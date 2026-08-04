@@ -147,7 +147,6 @@ def address_for_country(country: str) -> Address:
     return COUNTRY_ADDRESSES["US"]
 
 def get_fallback_addresses(exclude_country: str = "US") -> List[Address]:
-    """Return ordered list of fallback addresses excluding the already-tried country."""
     result = []
     for code in SHIPPING_FALLBACK_ORDER:
         if code.upper() != exclude_country.upper() and code in COUNTRY_ADDRESSES:
@@ -323,14 +322,14 @@ def to_float(v: Any) -> Tuple[float, bool]:
 
 _product_cache: Dict[str, tuple] = {}
 _product_cache_lock = threading.Lock()
-_PRODUCT_CACHE_TTL  = 3600  # ÓÇÚÉ
+_PRODUCT_CACHE_TTL  = 3600
 
 def find_cheapest_product(client: TLSClient, shop_url: str, min_price: float = 0.50) -> Tuple[str, str, str, str]:
     now = _time.time()
     with _product_cache_lock:
         cached = _product_cache.get(shop_url)
         if cached and now - cached[-1] < _PRODUCT_CACHE_TTL:
-            return cached[:-1]  # (title, product_id, variant_id, price_str)
+            return cached[:-1]
 
     best_price = float('inf')
     product_title = product_id = variant_id = price_str = ""
@@ -374,20 +373,17 @@ def find_cheapest_product(client: TLSClient, shop_url: str, min_price: float = 0
 # ???????????????????????? Step 1: cart ? checkout ????????????????????
 
 def add_to_cart_and_checkout(client: TLSClient, shop_url: str, variant_id: str) -> Tuple[str, str, str, str]:
-    # First add to cart
+    # 1. Add product to cart
     add_url = f"{shop_url}/cart/add.js"
     add_data = {'id': variant_id, 'quantity': '1'}
     add_headers = {
         'accept': 'application/json',
-        'accept-language': 'en-US,en;q=0.9',
         'content-type': 'application/x-www-form-urlencoded',
         'user-agent': client.user_agent,
         'referer': shop_url + '/',
     }
-    
     add_resp = client.post(add_url, data=add_data, headers=add_headers)
     if add_resp.status_code not in (200, 201):
-        # Try alternative add method
         add_data_json = {'items': [{'id': int(variant_id), 'quantity': 1}]}
         add_headers_json = {
             'accept': 'application/json',
@@ -399,21 +395,20 @@ def add_to_cart_and_checkout(client: TLSClient, shop_url: str, variant_id: str) 
         if add_resp.status_code not in (200, 201):
             raise Exception(f"cart add returned {add_resp.status_code}")
     
-    # Get cart token
+    # 2. Get cart token
     cart_js = client.get(f"{shop_url}/cart.js")
     if cart_js.status_code != 200:
         raise Exception(f"cart.js returned {cart_js.status_code}")
-    
     try:
         cart_data = cart_js.json()
         checkout_token = cart_data.get('token', '')
     except:
         checkout_token = ""
     
-    # Go to checkout
+    # 3. Go to checkout
     checkout_resp = client.get(f"{shop_url}/checkout", allow_redirects=True, headers={
         "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "accept-language": "en-US,en;q=0.9,en-IN;q=0.8",
+        "accept-language": "en-US,en;q=0.9",
         "cache-control": "no-cache",
         "pragma": "no-cache",
         "referer": shop_url + "/",
@@ -425,19 +420,16 @@ def add_to_cart_and_checkout(client: TLSClient, shop_url: str, variant_id: str) 
         "sec-fetch-site": "same-origin",
         "sec-fetch-user": "?1",
         "upgrade-insecure-requests": "1",
+        "user-agent": client.user_agent,
     })
 
     if checkout_resp.status_code not in (200, 302):
         raise Exception(f"checkout returned {checkout_resp.status_code}")
 
-    checkout_url   = checkout_resp.url
-    checkout_html  = checkout_resp.text
+    checkout_url = checkout_resp.url
+    checkout_html = checkout_resp.text
 
-    # Extract token from URL if not already
-    if not checkout_token:
-        token_match = re.search(r'/checkouts/cn/([^/?]+)', checkout_url)
-        checkout_token = token_match.group(1) if token_match else ""
-
+    # Extract session_token
     session_match = re.search(r'<meta\s+name="serialized-sessionToken"\s+content="([^"]*)"', checkout_html)
     session_token = html.unescape(session_match.group(1)).strip('"') if session_match else ""
     
@@ -445,9 +437,13 @@ def add_to_cart_and_checkout(client: TLSClient, shop_url: str, variant_id: str) 
         session_match = re.search(r'"sessionToken":"([^"]+)"', checkout_html)
         session_token = session_match.group(1) if session_match else ""
 
+    if not checkout_token:
+        token_match = re.search(r'/checkouts/cn/([^/?]+)', checkout_url)
+        checkout_token = token_match.group(1) if token_match else ""
+
     return checkout_url, checkout_token, session_token, checkout_html
 
-# ???????????????????????? Step 2: extraction helpers ????????????????
+# ???????????????????????? Step 2: private access token ???????????????
 
 def extract_private_access_token_id(checkout_html: str) -> str:
     unescaped = html.unescape(checkout_html)
@@ -470,6 +466,8 @@ def fetch_private_access_token(client: TLSClient, shop_url: str, checkout_url: s
     }
     resp = client.get(req_url, headers=headers)
     return f"[{resp.status_code}] {resp.text}"
+
+# ???????????????????????? Step 3: actions JS ?????????????????????????
 
 def extract_actions_js_url(checkout_html: str, shop_url: str) -> str:
     match = re.search(r'(/cdn/shopifycloud/checkout-web/assets/c1/actions[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.js)', checkout_html)
@@ -513,7 +511,25 @@ def extract_poll_for_receipt_id(js_body: str) -> str:
         match = re.search(p, js_body)
         if match:
             return match.group(1)
-    return "978b340f3027dc55313349c4089004147b6b0dccee75e42ed97685ef1feae418"  # fallback
+    return "978b340f3027dc55313349c4089004147b6b0dccee75e42ed97685ef1feae418"
+
+# ???????????????????????? Extraction helpers ?????????????????????????
+
+def extract_queue_token(proposal_json: str) -> str:
+    match = re.search(r'"queueToken"\s*:\s*"([^"]+)"', proposal_json)
+    return match.group(1) if match else ""
+
+def extract_is_shipping_required(proposal_json: str) -> bool:
+    try:
+        data   = json.loads(proposal_json)
+        seller = (data.get("data", {})
+                      .get("session", {})
+                      .get("negotiate", {})
+                      .get("result", {})
+                      .get("sellerProposal", {}))
+        return seller.get("isShippingRequired", True)
+    except Exception:
+        return True
 
 def extract_stable_id(checkout_html: str) -> str:
     unescaped = html.unescape(checkout_html)
@@ -538,21 +554,19 @@ def extract_pci_session_id(pci_body: str) -> str:
     match = re.search(r'"id"\s*:\s*"([^"]+)"', pci_body)
     return match.group(1) if match else ""
 
-def extract_queue_token(proposal_json: str) -> str:
-    match = re.search(r'"queueToken"\s*:\s*"([^"]+)"', proposal_json)
-    return match.group(1) if match else ""
-
-def extract_is_shipping_required(proposal_json: str) -> bool:
-    try:
-        data   = json.loads(proposal_json)
-        seller = (data.get("data", {})
-                      .get("session", {})
-                      .get("negotiate", {})
-                      .get("result", {})
-                      .get("sellerProposal", {}))
-        return seller.get("isShippingRequired", True)
-    except Exception:
-        return True
+def extract_payment_method_identifier(checkout_html: str) -> str:
+    """Extract paymentMethodIdentifier from checkout HTML."""
+    unescaped = html.unescape(checkout_html)
+    patterns = [
+        r'"paymentMethodIdentifier"\s*:\s*"([^"]+)"',
+        r'paymentMethodIdentifier&quot;:&quot;([^&]+)&quot;',
+        r'"paymentMethodIdentifier":"([^"]+)"',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, unescaped)
+        if match:
+            return match.group(1)
+    return ""
 
 def extract_delivery_handle(proposal_body: str) -> str:
     patterns = [
@@ -567,22 +581,25 @@ def extract_delivery_handle(proposal_body: str) -> str:
 
 def extract_signed_handles(proposal_json: str) -> List[str]:
     try:
-        data = json.loads(proposal_json)
+        data   = json.loads(proposal_json)
         seller = (data.get("data", {})
                       .get("session", {})
                       .get("negotiate", {})
                       .get("result", {})
                       .get("sellerProposal", {}))
-        de = seller.get("deliveryExpectations", {})
+        de          = seller.get("deliveryExpectations", {})
         de_typename = de.get("__typename", "")
+
         if de_typename == "FilledDeliveryExpectationTerms":
             return [x["signedHandle"] for x in de.get("deliveryExpectations", []) if x.get("signedHandle")]
+
         if "deliveryExpectations" in de:
             expectations = de.get("deliveryExpectations", [])
             if isinstance(expectations, list):
                 handles = [x.get("signedHandle") for x in expectations if x.get("signedHandle")]
                 if handles:
                     return handles
+
         if de_typename in ["UnfilledDeliveryExpectationTerms", "UnavailableTerms"]:
             return []
     except Exception:
@@ -606,7 +623,7 @@ def extract_seller_total(proposal_body: str) -> str:
 def extract_running_total(proposal_json: str) -> str:
     try:
         data = json.loads(proposal_json)
-        val = (data.get("data", {})
+        val  = (data.get("data", {})
                     .get("session", {})
                     .get("negotiate", {})
                     .get("result", {})
@@ -634,7 +651,7 @@ def extract_seller_country(proposal_body: str) -> str:
 def extract_tax_amount(proposal_json: str) -> str:
     try:
         data = json.loads(proposal_json)
-        val = (data.get("data", {})
+        val  = (data.get("data", {})
                     .get("session", {})
                     .get("negotiate", {})
                     .get("result", {})
@@ -648,7 +665,7 @@ def extract_tax_amount(proposal_json: str) -> str:
 
 def extract_tax_from_rejected(submit_json: str) -> str:
     try:
-        data = json.loads(submit_json)
+        data   = json.loads(submit_json)
         seller = (data.get("data", {})
                       .get("submitForCompletion", {})
                       .get("sellerProposal", {}))
@@ -661,7 +678,7 @@ def extract_tax_from_rejected(submit_json: str) -> str:
 
 def extract_total_from_rejected(submit_json: str) -> str:
     try:
-        data = json.loads(submit_json)
+        data   = json.loads(submit_json)
         seller = (data.get("data", {})
                       .get("submitForCompletion", {})
                       .get("sellerProposal", {}))
@@ -680,20 +697,6 @@ def extract_receipt_id(submit_body: str) -> str:
 def extract_receipt_session_token(submit_body: str) -> str:
     match = re.search(r'"sessionToken"\s*:\s*"([^"]+)"', submit_body)
     return match.group(1) if match else ""
-
-def extract_payment_method_identifier(checkout_html: str) -> str:
-    """Extract paymentMethodIdentifier from checkout HTML."""
-    unescaped = html.unescape(checkout_html)
-    patterns = [
-        r'"paymentMethodIdentifier"\s*:\s*"([^"]+)"',
-        r'paymentMethodIdentifier&quot;:&quot;([^&]+)&quot;',
-        r'"paymentMethodIdentifier":"([^"]+)"',
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, unescaped)
-        if match:
-            return match.group(1)
-    return ""
 
 def extract_any_error(submit_body: str) -> str:
     for pattern in [
@@ -735,11 +738,11 @@ def detect_shipping_restriction(proposal_body: str) -> bool:
     lower = proposal_body.lower()
     return any(s.lower() in lower for s in restriction_signals)
 
-# ???????????????????????? GraphQL payload helpers ????????????????????
+# ???????????????????????? Payload helpers ????????????????????????????
 
 def patch_payload(payload: str, currency: str, country: str) -> str:
     if currency != "USD":
-        payload = payload.replace('"currencyCode": "USD"', f'"currencyCode": "{currency}"')
+        payload = payload.replace('"currencyCode": "USD"',        f'"currencyCode": "{currency}"')
         payload = payload.replace('"presentmentCurrency": "USD"', f'"presentmentCurrency": "{currency}"')
     if country != "US":
         payload = payload.replace(
@@ -756,55 +759,6 @@ def generate_attempt_token(checkout_token: str) -> str:
 def generate_page_id() -> str:
     return f"{random.getrandbits(64):016x}"
 
-# ???????????????????????? GraphQL endpoint helpers ???????????????????
-
-def _get_graphql_url(shop_url: str, operation: str) -> str:
-    """Get the appropriate GraphQL endpoint."""
-    endpoints = [
-        f"{shop_url}/checkouts/internal/graphql/persisted?operationName={operation}",
-        f"{shop_url}/checkouts/unstable/graphql",
-        f"{shop_url}/checkouts/graphql",
-    ]
-    return endpoints[0]  # Return primary endpoint, others can be tried on failure
-
-_SEC_CH_UA_MAP = {
-    "chrome124": ('"Google Chrome";v="124", "Chromium";v="124", "Not-A.Brand";v="99"', '"Windows"'),
-    "chrome120": ('"Google Chrome";v="120", "Chromium";v="120", "Not-A.Brand";v="99"', '"Windows"'),
-    "chrome116": ('"Google Chrome";v="116", "Chromium";v="116", "Not-A.Brand";v="99"', '"Windows"'),
-    "edge101":   ('"Microsoft Edge";v="101", "Chromium";v="101", "Not-A.Brand";v="99"', '"Windows"'),
-    "safari15_5":('"Safari";v="15", "Not-A.Brand";v="99"', '"macOS"'),
-    "firefox133":('"Firefox";v="133", "Not-A.Brand";v="99"', '"Windows"'),
-}
-
-def _proposal_headers(shop_url: str, checkout_url: str, checkout_token: str,
-                      session_token: str, build_id: str, source_token: str,
-                      impersonate: str = "chrome124", user_agent: str = "") -> Dict:
-    sec_ch_ua, platform = _SEC_CH_UA_MAP.get(impersonate, _SEC_CH_UA_MAP["chrome124"])
-    ua = user_agent or random.choice(USER_AGENTS)
-    return {
-        "accept": "application/json",
-        "accept-language": "en-US,en;q=0.9",
-        "content-type": "application/json",
-        "origin": shop_url,
-        "priority": "u=1, i",
-        "referer": checkout_url,
-        "sec-ch-ua": sec_ch_ua,
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": platform,
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "same-origin",
-        "shopify-checkout-client": "checkout-web/1.0",
-        "shopify-checkout-source": f'id="{checkout_token}", type="cn"',
-        "user-agent": ua,
-        "x-checkout-one-session-token": session_token,
-        "x-checkout-web-build-id": build_id,
-        "x-checkout-web-deploy-stage": "production",
-        "x-checkout-web-server-handling": "fast",
-        "x-checkout-web-server-rendering": "yes",
-        "x-checkout-web-source-id": source_token,
-    }
-
 # ???????????????????????? Step 9: PCI tokenisation ???????????????????
 
 def send_pci_session(ident_sig: str, card_number: str, card_name: str,
@@ -813,34 +767,34 @@ def send_pci_session(ident_sig: str, card_number: str, card_name: str,
 
     payload = json.dumps({
         "credit_card": {
-            "number": card_number,
-            "month": card_month,
-            "year": card_year,
+            "number":             card_number,
+            "month":              card_month,
+            "year":               card_year,
             "verification_value": cvv,
-            "start_month": None,
-            "start_year": None,
-            "issue_number": "",
-            "name": card_name,
+            "start_month":        None,
+            "start_year":         None,
+            "issue_number":       "",
+            "name":               card_name,
         },
         "payment_session_scope": shop_domain,
     })
 
     headers = {
-        "accept": "application/json",
-        "accept-language": "en-US,en;q=0.9",
-        "content-type": "application/json",
-        "origin": "https://checkout.pci.shopifyinc.com",
-        "priority": "u=1, i",
-        "referer": "https://checkout.pci.shopifyinc.com/build/a8e4a94/number-ltr.html?identifier=&locationURL=",
-        "sec-ch-ua": '"Chromium";v="146", "Not-A.Brand";v="24", "Microsoft Edge";v="146"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Windows"',
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "same-origin",
+        "accept":               "application/json",
+        "accept-language":      "en-US,en;q=0.9",
+        "content-type":         "application/json",
+        "origin":               "https://checkout.pci.shopifyinc.com",
+        "priority":             "u=1, i",
+        "referer":              "https://checkout.pci.shopifyinc.com/build/a8e4a94/number-ltr.html?identifier=&locationURL=",
+        "sec-ch-ua":            '"Chromium";v="146", "Not-A.Brand";v="24", "Microsoft Edge";v="146"',
+        "sec-ch-ua-mobile":     "?0",
+        "sec-ch-ua-platform":   '"Windows"',
+        "sec-fetch-dest":       "empty",
+        "sec-fetch-mode":       "cors",
+        "sec-fetch-site":       "same-origin",
         "sec-fetch-storage-access": "active",
         "shopify-identification-signature": ident_sig,
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36 Edg/146.0.0.0",
+        "user-agent":           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36 Edg/146.0.0.0",
     }
 
     with Session(impersonate=random.choice(BROWSER_PROFILES)) as session:
@@ -850,7 +804,184 @@ def send_pci_session(ident_sig: str, card_number: str, card_name: str,
                             data=payload, headers=headers, timeout=12)
     return resp.status_code, resp.text
 
+# ???????????????????????? Proposal helpers ???????????????????????????
+
+_SEC_CH_UA_MAP = {
+    "chrome124": ('"Google Chrome";v="124", "Chromium";v="124", "Not-A.Brand";v="99"',   '"Windows"'),
+    "chrome120": ('"Google Chrome";v="120", "Chromium";v="120", "Not-A.Brand";v="99"',   '"Windows"'),
+    "chrome116": ('"Google Chrome";v="116", "Chromium";v="116", "Not-A.Brand";v="99"',   '"Windows"'),
+    "edge101":   ('"Microsoft Edge";v="101", "Chromium";v="101", "Not-A.Brand";v="99"',  '"Windows"'),
+    "safari15_5":('"Safari";v="15", "Not-A.Brand";v="99"',                               '"macOS"'),
+    "firefox133":('"Firefox";v="133", "Not-A.Brand";v="99"',                             '"Windows"'),
+}
+
+def _proposal_headers(shop_url: str, checkout_url: str, checkout_token: str,
+                      session_token: str, build_id: str, source_token: str,
+                      impersonate: str = "chrome124", user_agent: str = "") -> Dict:
+    sec_ch_ua, platform = _SEC_CH_UA_MAP.get(impersonate, _SEC_CH_UA_MAP["chrome124"])
+    ua = user_agent or random.choice(USER_AGENTS)
+    return {
+        "accept":                        "application/json",
+        "accept-language":               "en-US,en;q=0.9",
+        "content-type":                  "application/json",
+        "origin":                        shop_url,
+        "priority":                      "u=1, i",
+        "referer":                       checkout_url,
+        "sec-ch-ua":                     sec_ch_ua,
+        "sec-ch-ua-mobile":              "?0",
+        "sec-ch-ua-platform":            platform,
+        "sec-fetch-dest":                "empty",
+        "sec-fetch-mode":                "cors",
+        "sec-fetch-site":                "same-origin",
+        "shopify-checkout-client":       "checkout-web/1.0",
+        "shopify-checkout-source":       f'id="{checkout_token}", type="cn"',
+        "user-agent":                    ua,
+        "x-checkout-one-session-token":  session_token,
+        "x-checkout-web-build-id":       build_id,
+        "x-checkout-web-deploy-stage":   "production",
+        "x-checkout-web-server-handling":"fast",
+        "x-checkout-web-server-rendering":"yes",
+        "x-checkout-web-source-id":      source_token,
+    }
+
+# ???????????????????????? Unified Proposal ???????????????????????????
+
+def send_proposal_unified(client: TLSClient, shop_url: str, checkout_url: str, checkout_token: str,
+                          session_token: str, stable_id: str, variant_id: str, price: str,
+                          proposal_id: str, build_id: str, source_token: str, queue_token: str,
+                          email: str, addr: Address, currency: str, country: str,
+                          is_shipping: bool = True) -> Tuple[int, str]:
+
+    queue_token_str = f'"{queue_token}"' if queue_token else 'null'
+
+    if is_shipping:
+        addr_block = f'''"destination": {{
+            "partialStreetAddress": {{
+                "address1": "{addr.address1}", "address2": "{addr.address2}",
+                "city": "{addr.city}", "countryCode": "{addr.country_code}",
+                "postalCode": "{addr.postal_code}", "firstName": "{addr.first_name}",
+                "lastName": "{addr.last_name}", "zoneCode": "{addr.zone_code}",
+                "phone": "{addr.phone}", "oneTimeUse": false
+            }}
+        }}'''
+    else:
+        addr_block = '"destination": {"partialStreetAddress": {"address1": "", "city": "", "countryCode": "US", "lastName": "", "phone": "", "oneTimeUse": false}}'
+
+    gql_payload = f'''{{
+  "variables": {{
+    "sessionInput": {{"sessionToken": "{session_token}"}},
+    "queueToken": {queue_token_str},
+    "discounts": {{"lines": [], "acceptUnexpectedDiscounts": true}},
+    "delivery": {{
+      "deliveryLines": [{{
+        {addr_block},
+        "selectedDeliveryStrategy": {{
+          "deliveryStrategyMatchingConditions": {{
+            "estimatedTimeInTransit": {{"any": true}},
+            "shipments": {{"any": true}}
+          }},
+          "options": {{}}
+        }},
+        "targetMerchandiseLines": {{"any": true}},
+        "deliveryMethodTypes": ["SHIPPING"],
+        "expectedTotalPrice": {{"any": true}},
+        "destinationChanged": true
+      }}],
+      "noDeliveryRequired": [],
+      "useProgressiveRates": false,
+      "prefetchShippingRatesStrategy": null,
+      "supportsSplitShipping": true
+    }},
+    "deliveryExpectations": {{"deliveryExpectationLines": []}},
+    "merchandise": {{
+      "merchandiseLines": [{{
+        "stableId": "{stable_id}",
+        "merchandise": {{
+          "productVariantReference": {{
+            "id": "gid://shopify/ProductVariantMerchandise/{variant_id}",
+            "variantId": "gid://shopify/ProductVariant/{variant_id}",
+            "properties": [], "sellingPlanId": null, "sellingPlanDigest": null
+          }}
+        }},
+        "quantity": {{"items": {{"value": 1}}}},
+        "expectedTotalPrice": {{"any": true}},
+        "lineComponentsSource": null, "lineComponents": []
+      }}]
+    }},
+    "memberships": {{"memberships": []}},
+    "payment": {{
+      "totalAmount": {{"any": true}},
+      "paymentLines": [],
+      "billingAddress": {{
+        "streetAddress": {{
+          "address1": "{addr.address1}", "address2": "{addr.address2}",
+          "city": "{addr.city}", "countryCode": "{addr.country_code}",
+          "postalCode": "{addr.postal_code}", "firstName": "{addr.first_name}",
+          "lastName": "{addr.last_name}", "zoneCode": "{addr.zone_code}",
+          "phone": "{addr.phone}"
+        }}
+      }}
+    }},
+    "buyerIdentity": {{
+      "customer": {{"presentmentCurrency": "USD", "countryCode": "US"}},
+      "email": "{email}",
+      "emailChanged": false,
+      "phoneCountryCode": "US",
+      "marketingConsent": [],
+      "shopPayOptInPhone": {{"countryCode": "US"}},
+      "rememberMe": false
+    }},
+    "tip": {{"tipLines": []}},
+    "poNumber": null,
+    "taxes": {{
+      "proposedAllocations": null,
+      "proposedTotalAmount": {{"any": true}},
+      "proposedTotalIncludedAmount": null,
+      "proposedMixedStateTotalAmount": null,
+      "proposedExemptions": []
+    }},
+    "note": {{"message": null, "customAttributes": []}},
+    "localizationExtension": {{"fields": []}},
+    "nonNegotiableTerms": null,
+    "scriptFingerprint": {{
+      "signature": null, "signatureUuid": null,
+      "lineItemScriptChanges": [], "paymentScriptChanges": [], "shippingScriptChanges": []
+    }},
+    "optionalDuties": {{"buyerRefusesDuties": false}},
+    "cartMetafields": []
+  }},
+  "operationName": "Proposal",
+  "id": "{proposal_id}"
+}}'''
+
+    gql_payload = patch_payload(gql_payload, currency, country)
+    resp = client.post(
+        f"{shop_url}/checkouts/internal/graphql/persisted?operationName=Proposal",
+        data=gql_payload,
+        headers=_proposal_headers(shop_url, checkout_url, checkout_token, session_token, build_id, source_token,
+                                 impersonate=client.impersonate, user_agent=client.user_agent)
+    )
+    return resp.status_code, resp.text
+
 # ???????????????????????? Step 10: SubmitForCompletion ???????????????
+
+def send_poll_for_receipt(client: TLSClient, shop_url: str, checkout_url: str, checkout_token: str,
+                          session_token: str, build_id: str, source_token: str,
+                          poll_id: str, receipt_id: str, receipt_session_token: str) -> Tuple[int, str]:
+
+    params   = {
+        "operationName": "PollForReceipt",
+        "variables":     json.dumps({"receiptId": receipt_id, "sessionToken": receipt_session_token}),
+        "id":            poll_id,
+    }
+    full_url = f"{shop_url}/checkouts/internal/graphql/persisted?{urllib.parse.urlencode(params)}"
+
+    headers  = _proposal_headers(shop_url, checkout_url, checkout_token, session_token, build_id, source_token,
+                                impersonate=client.impersonate, user_agent=client.user_agent)
+    headers["x-checkout-web-source-id"] = checkout_token
+
+    resp = client.get(full_url, headers=headers)
+    return resp.status_code, resp.text
 
 def send_submit_for_completion(client: TLSClient, shop_url: str, checkout_url: str, checkout_token: str,
                                session_token: str, stable_id: str, variant_id: str, price: str,
@@ -862,16 +993,15 @@ def send_submit_for_completion(client: TLSClient, shop_url: str, checkout_url: s
                                is_digital: bool = False,
                                tax_amount: str = None) -> Tuple[int, str]:
 
-    handle_lines = [json.dumps({"signedHandle": h}) for h in (signed_handles or [])]
+    handle_lines       = [json.dumps({"signedHandle": h}) for h in (signed_handles or [])]
     signed_handles_json = "[" + ",".join(handle_lines) + "]"
-    page_id = generate_page_id()
+    page_id            = generate_page_id()
 
     if is_digital:
         total_amount_block = '"totalAmount": {"any": true}'
     else:
         total_amount_block = f'"totalAmount": {{"value": {{"amount": "{total_amount}", "currencyCode": "USD"}}}}'
 
-    # Use payment identifier from checkout if provided, otherwise empty
     payment_id_block = f'"{payment_identifier}"' if payment_identifier else 'null'
 
     if is_digital:
@@ -933,7 +1063,7 @@ def send_submit_for_completion(client: TLSClient, shop_url: str, checkout_url: s
       }},
       "deliveryExpectations": {{"deliveryExpectationLines": {signed_handles_json}}}'''
 
-    tax_val = tax_amount or "0.0"
+    tax_val   = tax_amount or "0.0"
     tax_block = f'"proposedTotalAmount": {{"value": {{"amount": "{tax_val}", "currencyCode": "USD"}}}}'
     queue_token_str = f'"{queue_token}"' if queue_token else 'null'
 
@@ -1054,9 +1184,8 @@ def send_submit_for_completion(client: TLSClient, shop_url: str, checkout_url: s
 }}'''
 
     gql_payload = patch_payload(gql_payload, currency, country)
-    graphql_url = _get_graphql_url(shop_url, "SubmitForCompletion")
     resp = client.post(
-        graphql_url,
+        f"{shop_url}/checkouts/internal/graphql/persisted?operationName=SubmitForCompletion",
         data=gql_payload,
         headers=_proposal_headers(shop_url, checkout_url, checkout_token, session_token, build_id, source_token,
                                  impersonate=client.impersonate, user_agent=client.user_agent)
@@ -1067,187 +1196,36 @@ def send_submit_for_completion(client: TLSClient, shop_url: str, checkout_url: s
         raise Exception(f"returned {resp.status_code}")
     return resp.status_code, resp.text
 
-def send_poll_for_receipt(client: TLSClient, shop_url: str, checkout_url: str, checkout_token: str,
-                          session_token: str, build_id: str, source_token: str,
-                          poll_id: str, receipt_id: str, receipt_session_token: str) -> Tuple[int, str]:
+# ???????????????????????? Error checking ?????????????????????????????
 
-    params = {
-        "operationName": "PollForReceipt",
-        "variables": json.dumps({"receiptId": receipt_id, "sessionToken": receipt_session_token}),
-        "id": poll_id,
-    }
-    full_url = f"{shop_url}/checkouts/internal/graphql/persisted?{urllib.parse.urlencode(params)}"
+def check_proposal_errors(step: str, status: int, body: str):
+    if status != 200:
+        matches = re.findall(
+            r'"code"\s*:\s*"([^"]+)"\s*,\s*"localizedMessage"\s*:\s*"[^"]*"\s*,\s*"nonLocalizedMessage"\s*:\s*"([^"]*)"',
+            body)
+        if matches:
+            raise Exception(f"Proposal error in {step}: {matches[0][1]}")
+        else:
+            raise Exception(f"Proposal returned non-200 status: {status}")
 
-    headers = _proposal_headers(shop_url, checkout_url, checkout_token, session_token, build_id, source_token,
-                               impersonate=client.impersonate, user_agent=client.user_agent)
-    headers["x-checkout-web-source-id"] = checkout_token
-
-    resp = client.get(full_url, headers=headers)
-    return resp.status_code, resp.text
-
-# ???????????????????????? Combined proposal function ?????????????????
-
-def send_proposal_combined(client: TLSClient, shop_url: str, checkout_url: str, checkout_token: str,
-                           session_token: str, stable_id: str, variant_id: str, price: str,
-                           proposal_id: str, build_id: str, source_token: str, queue_token: str,
-                           email: str, addr: Address, currency: str, country: str,
-                           is_shipping: bool = True) -> Tuple[int, str]:
-
-    if is_shipping:
-        delivery_block = f'''
-      "delivery": {{
-        "deliveryLines": [{{
-          "destination": {{
-            "partialStreetAddress": {{
-              "address1": "{addr.address1}",
-              "address2": "{addr.address2}",
-              "city": "{addr.city}",
-              "countryCode": "{addr.country_code}",
-              "postalCode": "{addr.postal_code}",
-              "firstName": "{addr.first_name}",
-              "lastName": "{addr.last_name}",
-              "zoneCode": "{addr.zone_code}",
-              "phone": "{addr.phone}",
-              "oneTimeUse": false
-            }}
-          }},
-          "selectedDeliveryStrategy": {{
-            "deliveryStrategyMatchingConditions": {{
-              "estimatedTimeInTransit": {{"any": true}},
-              "shipments": {{"any": true}}
-            }},
-            "options": {{}}
-          }},
-          "targetMerchandiseLines": {{"any": true}},
-          "deliveryMethodTypes": ["SHIPPING"],
-          "expectedTotalPrice": {{"any": true}},
-          "destinationChanged": true
-        }}],
-        "noDeliveryRequired": [],
-        "useProgressiveRates": false,
-        "prefetchShippingRatesStrategy": null,
-        "supportsSplitShipping": true
-      }}'''
-    else:
-        delivery_block = '''
-      "delivery": {
-        "deliveryLines": [{
-          "selectedDeliveryStrategy": {
-            "deliveryStrategyMatchingConditions": {
-              "estimatedTimeInTransit": {"any": true},
-              "shipments": {"any": true}
-            },
-            "options": {}
-          },
-          "targetMerchandiseLines": {"any": true},
-          "deliveryMethodTypes": ["NONE"],
-          "expectedTotalPrice": {"any": true},
-          "destinationChanged": true
-        }],
-        "noDeliveryRequired": [],
-        "useProgressiveRates": false,
-        "prefetchShippingRatesStrategy": null,
-        "supportsSplitShipping": true
-      }'''
-
-    buyer_identity = f'''
-    "buyerIdentity": {{
-      "customer": {{"presentmentCurrency": "USD", "countryCode": "US"}},
-      "email": "{email}",
-      "emailChanged": false,
-      "phoneCountryCode": "US",
-      "marketingConsent": [],
-      "shopPayOptInPhone": {{"countryCode": "US"}},
-      "rememberMe": false
-    }}'''
-
-    merchandise_block = f'''
-    "merchandise": {{
-      "merchandiseLines": [{{
-        "stableId": "{stable_id}",
-        "merchandise": {{
-          "productVariantReference": {{
-            "id": "gid://shopify/ProductVariantMerchandise/{variant_id}",
-            "variantId": "gid://shopify/ProductVariant/{variant_id}",
-            "properties": [], "sellingPlanId": null, "sellingPlanDigest": null
-          }}
-        }},
-        "quantity": {{"items": {{"value": 1}}}},
-        "expectedTotalPrice": {{"any": true}},
-        "lineComponentsSource": null, "lineComponents": []
-      }}]
-    }}'''
-
-    queue_token_str = f'"{queue_token}"' if queue_token else 'null'
-
-    gql_payload = f'''{{
-  "variables": {{
-    "sessionInput": {{"sessionToken": "{session_token}"}},
-    "queueToken": {queue_token_str},
-    "discounts": {{"lines": [], "acceptUnexpectedDiscounts": true}},
-    {delivery_block},
-    "deliveryExpectations": {{"deliveryExpectationLines": []}},
-    {merchandise_block},
-    "memberships": {{"memberships": []}},
-    "payment": {{
-      "totalAmount": {{"any": true}},
-      "paymentLines": [],
-      "billingAddress": {{
-        "streetAddress": {{
-          "address1": "{addr.address1}",
-          "address2": "{addr.address2}",
-          "city": "{addr.city}",
-          "countryCode": "{addr.country_code}",
-          "postalCode": "{addr.postal_code}",
-          "firstName": "{addr.first_name}",
-          "lastName": "{addr.last_name}",
-          "zoneCode": "{addr.zone_code}",
-          "phone": "{addr.phone}"
-        }}
-      }}
-    }},
-    {buyer_identity},
-    "tip": {{"tipLines": []}},
-    "poNumber": null,
-    "taxes": {{
-      "proposedAllocations": null,
-      "proposedTotalAmount": {{"any": true}},
-      "proposedTotalIncludedAmount": null,
-      "proposedMixedStateTotalAmount": null,
-      "proposedExemptions": []
-    }},
-    "note": {{"message": null, "customAttributes": []}},
-    "localizationExtension": {{"fields": []}},
-    "nonNegotiableTerms": null,
-    "scriptFingerprint": {{
-      "signature": null, "signatureUuid": null,
-      "lineItemScriptChanges": [], "paymentScriptChanges": [], "shippingScriptChanges": []
-    }},
-    "optionalDuties": {{"buyerRefusesDuties": false}},
-    "cartMetafields": []
-  }},
-  "operationName": "Proposal",
-  "id": "{proposal_id}"
-}}'''
-
-    gql_payload = patch_payload(gql_payload, currency, country)
-    graphql_url = _get_graphql_url(shop_url, "Proposal")
-    resp = client.post(
-        graphql_url,
-        data=gql_payload,
-        headers=_proposal_headers(shop_url, checkout_url, checkout_token, session_token, build_id, source_token,
-                                 impersonate=client.impersonate, user_agent=client.user_agent)
-    )
-    if resp.status_code == 429:
-        raise Exception("returned 429")
-    if resp.status_code >= 500:
-        raise Exception(f"returned {resp.status_code}")
-    return resp.status_code, resp.text
+def check_submit_errors(status: int, body: str):
+    if status != 200:
+        match = re.search(r'"__typename"\s*:\s*"(SubmitSuccess|SubmitAlreadyAccepted|SubmitFailed|SubmitThrottled)"', body)
+        if match:
+            typename = match.group(1)
+            if typename != "SubmitSuccess":
+                errors = re.findall(r'"code"\s*:\s*"([^"]+)"', body)
+                raise Exception(f"Submit failed with {typename}: {errors if errors else 'Unknown error'}")
+        else:
+            error_msg = extract_any_error(body)
+            if error_msg:
+                raise Exception(f"Submit error: {error_msg}")
+            else:
+                raise Exception(f"Submit returned non-200 status: {status}")
 
 # ???????????????????????? Main checkout function ??????????????????????
 
 def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -> CheckResult:
-    """Enhanced version with random browser fingerprints and addresses, with shipping fallback."""
     currency = "USD"
     country = "US"
     site_name = shop_url.replace("https://", "").replace("http://", "")
@@ -1291,9 +1269,8 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
             build_id = extract_commit_sha(checkout_html)
             source_token = extract_source_token(checkout_html)
             if not stable_id or not build_id or not source_token:
-                # Try to extract from HTML without meta tags
                 stable_id = stable_id or "1"
-                build_id = build_id or "12fsZ2wpqmDsFH9nh8xUceKKyVvJdkXV4h"
+                build_id = build_id or "1Pu8YuQFTtVqj13KLhyp4n2r3L6WtGf4N7"
                 source_token = source_token or checkout_token
         except Exception as e:
             result.status = CheckStatus.ERROR
@@ -1301,13 +1278,8 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
             result.error = Exception(f"Step 1 failed: {e}")
             return result
         
-        # Step 2 - Get private access token (optional)
-        try:
-            pat_id = extract_private_access_token_id(checkout_html)
-            if pat_id:
-                fetch_private_access_token(client, shop_url, checkout_url, pat_id)
-        except Exception:
-            pass  # Optional step
+        # Step 2 - Get payment method identifier
+        payment_identifier = extract_payment_method_identifier(checkout_html)
         
         # Step 3 - Get actions JS and extract IDs (or use fallbacks)
         try:
@@ -1318,7 +1290,6 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
                 submit_id = extract_submit_for_completion_id(js_body)
                 poll_for_receipt_id = extract_poll_for_receipt_id(js_body)
             else:
-                # Fallback IDs
                 proposal_id = "bf2f1e3a4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f"
                 submit_id = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b"
                 poll_for_receipt_id = "978b340f3027dc55313349c4089004147b6b0dccee75e42ed97685ef1feae418"
@@ -1326,50 +1297,21 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
             if not proposal_id or not submit_id:
                 proposal_id = "bf2f1e3a4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f"
                 submit_id = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b"
-                
-        except Exception as e:
+        except Exception:
             proposal_id = "bf2f1e3a4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f"
             submit_id = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b"
             poll_for_receipt_id = "978b340f3027dc55313349c4089004147b6b0dccee75e42ed97685ef1feae418"
         
-        # Step 4 - Get payment method identifier
-        payment_identifier = extract_payment_method_identifier(checkout_html)
-        
-        # Step 5 - First Proposal (no email, no address) - using combined function
-        addr = address_for_country("US")
-        try:
-            _, proposal_body = send_proposal_combined(
-                client, shop_url, checkout_url, checkout_token, session_token,
-                stable_id, variant_id, price, proposal_id, build_id, source_token,
-                None, email, addr, currency, country, is_shipping=True
-            )
-            cur = extract_seller_currency(proposal_body)
-            if cur and cur != currency:
-                currency = cur
-            ctr = extract_seller_country(proposal_body)
-            if ctr and ctr != country:
-                country = ctr
-            result.currency = currency
-            
-            if currency == "USD":
-                seller_price = extract_seller_merchandise_price(proposal_body)
-                if seller_price and seller_price != price:
-                    price = seller_price
-            
-            queue_token = extract_queue_token(proposal_body)
-        except Exception as e:
-            queue_token = None
-        
-        # Step 6 - Proposal with email and address
+        # Step 4 - Proposal with email and address
         addr = address_for_country(country)
         fallback_addrs = get_fallback_addresses(addr.country_code)
         fallback_idx = 0
         final_proposal_body = None
-        final_queue_token = queue_token
+        final_queue_token = None
         
         try:
             for attempt in range(1 + len(fallback_addrs)):
-                _, p3_body = send_proposal_combined(
+                _, p3_body = send_proposal_unified(
                     client, shop_url, checkout_url, checkout_token, session_token,
                     stable_id, variant_id, price, proposal_id, build_id, source_token,
                     final_queue_token, email, addr, currency, country, is_shipping=True
@@ -1389,11 +1331,10 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
                     fallback_idx += 1
                     continue
                 
-                # Check for signed handles
                 signed_check = extract_signed_handles(p3_body)
                 if not signed_check:
                     time.sleep(0.05)
-                    _, p3_body2 = send_proposal_combined(
+                    _, p3_body2 = send_proposal_unified(
                         client, shop_url, checkout_url, checkout_token, session_token,
                         stable_id, variant_id, price, proposal_id, build_id, source_token,
                         final_queue_token, email, addr, currency, country, is_shipping=True
@@ -1414,7 +1355,7 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
             result.error = Exception(f"Proposal failed: {e}")
             return result
         
-        # Step 9 - PCI Session
+        # Step 5 - PCI Session
         try:
             ident_sig = extract_identification_signature(checkout_html)
             if not ident_sig:
@@ -1435,7 +1376,7 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
             result.error = Exception(f"PCI session failed: {e}")
             return result
         
-        # Step 10 - Submit
+        # Step 6 - Submit
         try:
             is_digital = not extract_is_shipping_required(final_proposal_body)
             
@@ -1490,7 +1431,6 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
                         raise Exception("tax kept changing after 3 retries")
                     time.sleep(0.05)
                     continue
-                
                 break
             
             receipt_id = extract_receipt_id(submit_body)
@@ -1514,7 +1454,6 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
                 result.error = Exception("could not extract sessionToken")
                 return result
             
-            # Check if order placed immediately
             if "ProcessedReceipt" in submit_body or "SuccessfulReceipt" in submit_body:
                 result.status = CheckStatus.CHARGED
                 result.status_code = "ORDER_PLACED"
@@ -1526,7 +1465,7 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
             result.error = e
             return result
         
-        # Step 11 - Poll for receipt
+        # Step 7 - Poll for receipt
         poll_delay_re = re.compile(r'"pollDelay"\s*:\s*(\d+)')
         type_name_re = re.compile(r'"__typename"\s*:\s*"(ProcessingReceipt|FailedReceipt|SuccessfulReceipt|ProcessedReceipt|ActionRequiredReceipt)"')
         
@@ -1578,11 +1517,6 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
                     elif error_code == "CARD_DECLINED":
                         result.status = CheckStatus.DECLINED
                         result.error = Exception(f"{error_code}")
-                        return result
-                    elif error_code == "GENERIC_ERROR":
-                        result.status = CheckStatus.DECLINED
-                        result.status_code = "CARD_DECLINED"
-                        result.error = Exception("CARD_DECLINED")
                         return result
                     else:
                         if "InventoryReservationFailure" in poll_body:
