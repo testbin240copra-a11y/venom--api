@@ -34,8 +34,8 @@ _dead_lock  = _threading.Lock()
 _PROXY_SIGNS = ("407", "CONNECT tunnel", "libcurl", "Proxy Authentication", "curl: (56)", "curl: (7)")
 
 _SITE_TTL = {
-    "returned 429":              1800,  # 30 دقيقة
-    "returned 403":              3600,  # ساعة
+    "returned 429":              1800,
+    "returned 403":              3600,
     "returned 402":              300,
     "returned 422":              300,
     "returned 404":              86400,
@@ -136,44 +136,211 @@ def site_count(site_range: str = "random") -> int:
 
 # ──────────────────────── Shopify Response Words ─────────────────────────────
 
+# ===== CHARGED (تم الدفع) =====
 _CHARGE_WORDS = (
     "order_paid", "order_placed", "order_confirmed", "order_completed",
+    "successful", "succeeded", "success", "captured", 
+    "paid", "payment_success", "payment_successful",
+    "charge_success", "charge_successful",
+    "transaction_approved", "approved",
+    "receipt", "confirmation", "thank_you",
+    "completed", "done", "fulfilled",
 )
 
+# ===== APPROVED (موافقة - تحتاج تحقق) =====
 _APPROVED_EXACT = frozenset({"approved", "live", "success", "ccn live cvv", "live cvv"})
+
 _APPROVED_WORDS = (
+    # مشاكل الرصيد
     "insufficient_funds", "insufficient funds",
+    "not_sufficient_funds", "not sufficient funds",
+    "insufficient_balance", "insufficient balance",
+    
+    # مشاكل ZIP/Postal
     "incorrect_zip", "incorrect zip",
+    "invalid_zip", "invalid zip",
+    "incorrect_postal", "incorrect postal",
+    "invalid_postal", "invalid postal",
+    "postal_code_failure", "postal code failure",
+    
+    # مشاكل CVC/CVV
     "incorrect_cvc", "incorrect cvc",
+    "incorrect_cvv", "incorrect cvv",
+    "invalid_cvc", "invalid cvc",
+    "invalid_cvv", "invalid cvv",
+    "cvc_failure", "cvv_failure",
+    "cvc_mismatch", "cvv_mismatch",
+    "security_code_failure", "security code failure",
+    
+    # 3DS
     "3ds_authentication", "3ds_required", "3d_required",
     "3d_authentication", "3ds-auth", "3d-secure", "3d secure",
     "3d_redirect", "3ds", "3d",
     "authentication_required", "auth required",
     "otp_required", "otp required", "otp",
-    "challenge required", "incorrect_number", "two factor",
+    "challenge_required", "challenge required",
+    "two_factor", "two factor",
+    "redirect_required", "redirect required",
+    
+    # مشاكل رقم الكارت
+    "incorrect_number", "invalid_number",
+    "invalid_card_number", "invalid card number",
+    "card_number_invalid", "card number invalid",
+    
+    # مشاكل أخرى
+    "incorrect_name", "incorrect name",
+    "invalid_name", "invalid name",
+    "name_mismatch", "name mismatch",
+    "billing_address_mismatch", "billing address mismatch",
+    "address_verification_failed", "address verification failed",
+    "avs_failure", "avs failure",
+    "avs_mismatch", "avs mismatch",
+    
+    # مشاكل تاريخ الانتهاء
+    "incorrect_expiry", "incorrect expiry",
+    "invalid_expiry", "invalid expiry",
+    "expiry_date_invalid", "expiry date invalid",
+    
+    # موافقة مع تحذير
+    "auth_only", "auth only",
+    "pre_auth", "pre auth",
+    "authorization_held", "authorization held",
+    "pending", "pending_auth",
 )
 
+# ===== DECLINED (مرفوض) =====
 _DECLINED_EXACT = frozenset({"declined", "dead", "0", "invalid", "failed"})
+
 _DECLINED_WORDS = (
+    # مرفوض عام
     "generic_decline", "generic decline",
-    "do_not_honor", "FRAUD",
-    "stolen_card", "lost_card", "pickup_card", "restricted_card",
-    "fraudulent", "fraud",
+    "do_not_honor", 
+    "declined", "card_declined", "card declined",
+    "transaction_declined", "transaction declined",
+    "payment_declined", "payment declined",
+    
+    # احتيال
+    "fraud", "fraudulent", "fraud_suspected",
+    "suspected_fraud", "suspected fraud",
+    "high_risk", "high risk",
+    "risk_declined", "risk declined",
+    "velocity_check_failed", "velocity check failed",
+    
+    # مشاكل الكارت
+    "stolen_card", "lost_card", "pickup_card",
+    "restricted_card", "blocked_card",
+    "card_blocked", "card blocked",
+    "card_reported_lost", "card reported lost",
+    "card_reported_stolen", "card reported stolen",
+    
+    # انتهاء الصلاحية
     "expired_card", "expired",
+    "card_expired", "card expired",
+    "expiry_date_passed", "expiry date passed",
+    
+    # معاملة غير مسموحة
     "transaction_not_allowed",
-    "card_declined", "card declined",
-    "processor_declined",
-    "card_not_supported", "currency_not_supported",
-    "revocation_of_authorization", "no_action_taken",
+    "not_permitted", 
+    "permission_denied", "permission denied",
+    "operation_not_permitted", "operation not permitted",
+    
+    # مشاكل المعالج
+    "processor_declined", 
+    "processor_error", "processor error",
+    "processing_error", "processing error",
+    "gateway_rejected", "gateway rejected",
+    "acquirer_rejected", "acquirer rejected",
+    
+    # كارت غير مدعوم
+    "card_not_supported",
+    "card_type_not_supported", "card type not supported",
+    "brand_not_supported", "brand not supported",
+    "Credit card brand is not supported:",
+    
+    # عملة غير مدعومة
+    "currency_not_supported",
+    "currency_not_allowed", "currency not allowed",
+    
+    # مشاكل أخرى
+    "revocation_of_authorization",
+    "no_action_taken",
     "your card was declined",
     "payment_intent_authentication_failure",
-    "Credit card brand is not supported: maestro",
     "invalid_number",
-    "decision_rule_block", "generic_error",
+    "decision_rule_block",
+    "generic_error",
+    
+    # مشاكل المتجر
     "buyer_identity_presentment_currency_does_not_match",
     "delivery_no_delivery_strategy_available",
     "this order is prevented due to suspect of fraud",
-    "not_permitted",
+    "order_prevented", "order prevented",
+    "fraud_check_failed", "fraud check failed",
+    
+    # مشاكل الحد
+    "limit_exceeded", "limit exceeded",
+    "exceeds_limit", "exceeds limit",
+    "over_limit", "over limit",
+    "credit_limit_exceeded", "credit limit exceeded",
+    
+    # مشاكل PIN
+    "incorrect_pin", "incorrect pin",
+    "invalid_pin", "invalid pin",
+    "pin_retry_exceeded", "pin retry exceeded",
+    
+    # مشاكل الحساب
+    "account_closed", "account closed",
+    "account_frozen", "account frozen",
+    "account_suspended", "account suspended",
+    "account_not_found", "account not found",
+    
+    # مشاكل الشبكة
+    "network_error", "network error",
+    "connection_error", "connection error",
+    "timeout", "timed_out", "time_out",
+    "retry_later", "try again later",
+)
+
+# ===== ERROR (أخطاء تقنية) =====
+_ERROR_WORDS = (
+    "internal_error", "internal server error",
+    "system_error", "system error",
+    "unexpected_error", "unexpected error",
+    "unknown_error", "unknown error",
+    "connection_refused", "connection refused",
+    "connection_timeout", "connection timeout",
+    "network_unreachable", "network unreachable",
+    "host_unreachable", "host unreachable",
+    "dns_error", "dns error",
+    "ssl_error", "ssl error",
+    "api_error", "api error",
+    "bad_request", "bad request",
+    "invalid_request", "invalid request",
+    "unauthorized",
+    "forbidden",
+    "not_found", "not found",
+    "method_not_allowed", "method not allowed",
+    "rate_limit_exceeded", "rate limit exceeded",
+    "too_many_requests", "too many requests",
+    "proxy_error", "proxy error",
+    "proxy_authentication_required", "proxy authentication required",
+    "proxy_connection_failed", "proxy connection failed",
+    "tunnel_connection_failed", "tunnel connection failed",
+    "session_expired", "session expired",
+    "invalid_session", "invalid session",
+    "session_not_found", "session not found",
+    "product_not_available", "product not available",
+    "out_of_stock", "out of stock",
+    "inventory_issue", "inventory issue",
+    "inventory_reservation_failure", "inventory reservation failure",
+    "product_not_found", "product not found",
+    "payment_processor_error", "payment processor error",
+    "payment_gateway_error", "payment gateway error",
+    "payment_method_not_available", "payment method not available",
+    "parsing_error", "parsing error",
+    "json_error", "json error",
+    "validation_error", "validation error",
+    "configuration_error", "configuration error",
 )
 
 # ── Gateway response normalization ─────────────────────────────────────────────
@@ -216,31 +383,33 @@ def normalize_result(status: str, result_str: str) -> tuple[str, str]:
     up   = resp.upper()
     lower = resp.lower()
 
-    # ===== أولاً: التحقق من CHARGED =====
+    # ===== 1. CHARGED =====
     if any(k in lower for k in _CHARGE_WORDS):
         return "charged", resp
     
-    # ===== ثانياً: التحقق من APPROVED =====
+    # ===== 2. ERROR =====
+    if any(k in lower for k in _ERROR_WORDS):
+        return "error", resp
+    
+    # ===== 3. APPROVED =====
     if resp.lower() in _APPROVED_EXACT:
         return "approved", resp
     if any(k in lower for k in _APPROVED_WORDS):
         return "approved", resp
 
-    # ===== ثالثاً: التحقق من DECLINED =====
+    # ===== 4. DECLINED =====
     if status == "declined" or resp.lower() in _DECLINED_EXACT:
         if not any(k in up for k in _INFRA_ERROR_KEYWORDS):
             return "declined", resp
 
-    # ===== رابعاً: التحقق من DECLINED بالكلمات =====
     if any(k in lower for k in _DECLINED_WORDS):
         if not any(k in up for k in _INFRA_ERROR_KEYWORDS):
             return "declined", resp
 
-    # ===== خامساً: التحقق من ORDER_PLACED =====
+    # ===== 5. Fallback =====
     if any(k in up for k in ("ORDER_PLACED", "SUCCESSFULRECEIPT", "PROCESSEDRECEIPT")):
         return "charged", resp
 
-    # ===== سادساً: التحقق من الكلمات القديمة =====
     if any(k in up for k in _APPROVED_KEYWORDS):
         if not any(k in up for k in _DECLINED_KEYWORDS):
             return "approved", resp
