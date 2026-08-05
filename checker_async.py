@@ -9,16 +9,15 @@ import auto_async
 import checker
 from auto import CheckStatus
 
-# Per-site semaphore — max 3 concurrent requests per site to avoid 429
+# Per-site semaphore — max 1 concurrent request per site to avoid 429
 _site_sems: dict[str, asyncio.Semaphore] = {}
 _site_sems_lock = asyncio.Lock()
 
 async def _get_site_sem(site: str) -> asyncio.Semaphore:
     async with _site_sems_lock:
         if site not in _site_sems:
-            _site_sems[site] = asyncio.Semaphore(3)
+            _site_sems[site] = asyncio.Semaphore(1)  # طلب واحد في نفس الوقت
         return _site_sems[site]
-
 
 async def check_card_async(cc: str, site: str, proxy: str) -> dict:
     # لو الموقع ميت خذ بديل تلقائياً
