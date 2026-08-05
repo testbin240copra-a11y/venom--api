@@ -8,6 +8,13 @@ import asyncio
 import auto_async
 import checker
 from auto import CheckStatus
+import os
+import sys
+import logging
+
+# إخفاء الـ logs
+sys.stderr = open(os.devnull, 'w')
+logging.getLogger().setLevel(logging.CRITICAL)
 
 # Per-site semaphore — max 1 concurrent request per site to avoid 429
 _site_sems: dict[str, asyncio.Semaphore] = {}
