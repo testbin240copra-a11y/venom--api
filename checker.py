@@ -492,6 +492,8 @@ def validate_proxy_info(proxy: str) -> dict | None:
 
 # ── Card checker ──────────────────────────────────────────────────────────────
 
+# checker.py - دالة check_card
+
 def check_card(cc: str, site: str, proxy: str) -> dict:
     proxy_url = ""
     try:
