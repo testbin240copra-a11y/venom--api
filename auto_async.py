@@ -853,6 +853,8 @@ async def send_submit_for_completion(client: AsyncTLSClient, shop_url: str, chec
 
 # auto_async.py - فقط الجزء المطلوب من run_checkout_for_card_async
 
+# auto_async.py - دالة run_checkout_for_card_async كاملة
+
 async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url: str = "", max_price: float = 20.0) -> CheckResult:
     """
     تشغيل فحص البطاقة مع تحديد أقصى سعر للمنتج
@@ -885,7 +887,7 @@ async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url:
             title, product_id, product_handle, variant_id, price = await find_cheapest_product(
                 client, shop_url,
                 min_price=0.50,
-                max_price=max_price  # السعر الأقصى المطلوب
+                max_price=max_price
             )
             _ = title
         except Exception as e:
@@ -1082,20 +1084,37 @@ async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url:
         for poll_num in range(1, 31):
             try:
                 _, poll_body = await send_poll_for_receipt(client, shop_url, checkout_url, checkout_token, session_token, build_id, source_token, poll_for_receipt_id, receipt_id, receipt_session_token)
+                
                 receipt_type = ""
                 m = type_name_re.search(poll_body)
                 if m:
                     receipt_type = m.group(1)
                 result.status_code = extract_receipt_status_code(poll_body, receipt_type)
+                
+                # ===== استخراج receipt_url في جميع الحالات =====
+                try:
+                    poll_json = json.loads(poll_body)
+                    receipt_obj = poll_json.get("data", {}).get("receipt", {})
+                    conf_url = receipt_obj.get("confirmationPage", {}).get("url", "")
+                    if conf_url:
+                        result.receipt_url = conf_url
+                except Exception:
+                    pass
+                
                 if receipt_type in ("SuccessfulReceipt", "ProcessedReceipt"):
                     result.status = CheckStatus.CHARGED
                     result.status_code = "ORDER_PLACED"
-                    result.receipt_url = checkout_url + "/thank_you"
+                    if not result.receipt_url:
+                        result.receipt_url = checkout_url + "/thank_you"
                     return result
+                    
                 if receipt_type == "ActionRequiredReceipt":
                     result.status = CheckStatus.APPROVED
                     result.status_code = "3DS_AUTHENTICATION"
+                    if not result.receipt_url:
+                        result.receipt_url = checkout_url
                     return result
+                    
                 if receipt_type == "FailedReceipt":
                     error_re = re.compile(r'"code"\s*:\s*"([^"]+)"')
                     em = error_re.search(poll_body)
@@ -1116,7 +1135,10 @@ async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url:
                         else:
                             result.status = CheckStatus.DECLINED
                             result.error = Exception(error_code)
+                    if not result.receipt_url:
+                        result.receipt_url = checkout_url
                     return result
+                    
                 delay = 200
                 m2 = poll_delay_re.search(poll_body)
                 if m2:
@@ -1127,6 +1149,7 @@ async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url:
                     except ValueError:
                         pass
                 await asyncio.sleep(min(delay, 200) / 1000.0)
+                
             except Exception as e:
                 result.status = CheckStatus.ERROR
                 result.error = Exception(f"poll {poll_num} failed: {e}")
