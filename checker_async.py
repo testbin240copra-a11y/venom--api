@@ -1,29 +1,44 @@
-# checker_async.py
+# checker_async.py - مع إضافة max_price
+
+"""
+Async card checker — wraps auto_async.run_checkout_for_card_async.
+Reuses checker.py's site cache (_sites, _alive_sites, _mark_dead, etc.)
+"""
 
 import asyncio
-import os
-import sys
-import logging
-import random
 
 import auto_async
 import checker
 from auto import CheckStatus
+import os
+import sys
+import logging
 
+# إخفاء الـ logs
 sys.stderr = open(os.devnull, 'w')
 logging.getLogger().setLevel(logging.CRITICAL)
 
-CONCURRENT_PER_SITE = int(os.environ.get("CONCURRENT_PER_SITE", "2"))  # تقليل التزامن لتجنب 429
+# Per-site semaphore — max 1 concurrent request per site to avoid 429
 _site_sems: dict[str, asyncio.Semaphore] = {}
 _site_sems_lock = asyncio.Lock()
 
 async def _get_site_sem(site: str) -> asyncio.Semaphore:
     async with _site_sems_lock:
         if site not in _site_sems:
-            _site_sems[site] = asyncio.Semaphore(CONCURRENT_PER_SITE)
+            _site_sems[site] = asyncio.Semaphore(1)  # طلب واحد في نفس الوقت
         return _site_sems[site]
 
-async def check_card_async(cc: str, site: str, proxy: str, max_price: float = 25.0) -> dict:
+async def check_card_async(cc: str, site: str, proxy: str, max_price: float = 20.0) -> dict:
+    """
+    فحص البطاقة مع تحديد أقصى سعر للمنتج
+    
+    Args:
+        cc: البطاقة بصيغة رقم|شهر|سنة|CVV
+        site: رابط المتجر
+        proxy: البروكسي
+        max_price: أقصى سعر للمنتج (افتراضي 20 دولار)
+    """
+    # لو الموقع ميت خذ بديل تلقائياً
     if checker._is_dead(site):
         alt = checker.get_random_site()
         if alt and alt != site:
@@ -38,6 +53,7 @@ async def check_card_async(cc: str, site: str, proxy: str, max_price: float = 25
     site_sem = await _get_site_sem(site)
     async with site_sem:
         try:
+            # ===== تمرير max_price إلى auto_async =====
             res = await auto_async.run_checkout_for_card_async(site, cc, proxy_url, max_price)
         except Exception as e:
             err_msg = str(e).replace("\n", " ")[:150]
