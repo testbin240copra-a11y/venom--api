@@ -1,3 +1,5 @@
+# auto.py - كامل بكل الدوال
+
 import json
 import random
 import re
@@ -34,11 +36,12 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
 ]
 
-# ──────────────────────── متغيرات الكاش للـ 429 ────────────────────
-
+# ===== متغيرات السرعة والسعر =====
+MAX_PRODUCT_PRICE = 20.0
+MIN_PRODUCT_PRICE = 0.50
 _site_429_cache = {}
 _site_429_cache_lock = threading.Lock()
-_SITE_429_TTL = 1800  # 30 دقيقة
+_SITE_429_TTL = 1800
 
 # ──────────────────────── Enums / Result types ───────────────────────
 
@@ -126,7 +129,6 @@ COUNTRY_ADDRESSES: Dict[str, Address] = {
     "AE":    Address("ahmed", "al-mansouri","Sheikh Zayed Road 1",  "",          "Dubai",         "AE", "DU",  "12345",   "+97141234567",  "gmail.com"),
 }
 
-# Fallback order when US shipping is rejected
 SHIPPING_FALLBACK_ORDER = ["CA", "GB", "AU", "DE", "FR", "NL", "IE", "SE", "NO", "DK"]
 
 EMAIL_DOMAINS  = ["gmail.com","yahoo.com","outlook.com","hotmail.com","protonmail.com","icloud.com","aol.com","mail.com","yandex.com","proton.me"]
@@ -155,7 +157,7 @@ def get_fallback_addresses(exclude_country: str = "US") -> List[Address]:
 # ──────────────────────── TLS Client ─────────────────────────────────
 
 class TLSClient:
-    def __init__(self, timeout=12, proxy_url=None, impersonate=None, user_agent=None):
+    def __init__(self, timeout=10, proxy_url=None, impersonate=None, user_agent=None):
         self.timeout = timeout
         if impersonate is None:
             impersonate = random.choice(BROWSER_PROFILES)
@@ -225,8 +227,6 @@ def get_random_site() -> Optional[str]:
 def get_all_sites() -> List[str]:
     return load_sites_from_file(SITE_TXT)
 
-# ──────────────────────── Site tester ──────────────────────────────
-
 def test_site_alive(client: TLSClient, shop_url: str) -> bool:
     try:
         resp = client.get(shop_url, timeout=10)
@@ -269,12 +269,11 @@ def get_random_working_site(client: TLSClient) -> Optional[str]:
 
 _product_cache: Dict[str, tuple] = {}
 _product_cache_lock = threading.Lock()
-_PRODUCT_CACHE_TTL  = 3600  # ساعة
+_PRODUCT_CACHE_TTL  = 3600
 
 # ──────────────────────── Extract products from JSON ─────────────────
 
 def _extract_products_from_json(data: dict) -> List[Tuple[str, str, str, str]]:
-    """استخرج المنتجات من JSON"""
     results = []
     
     def extract(obj):
@@ -308,11 +307,7 @@ def _extract_products_from_json(data: dict) -> List[Tuple[str, str, str, str]]:
     extract(data)
     return results
 
-# ──────────────────────── Find product (without 429) ─────────────────
-
-
-MAX_PRODUCT_PRICE = 20.0  # أقصى سعر 20 دولار
-MIN_PRODUCT_PRICE = 0.50  # أقل سعر
+# ──────────────────────── Find product ───────────────────────────────
 
 def find_cheapest_product(client: TLSClient, shop_url: str, min_price: float = MIN_PRODUCT_PRICE, max_price: float = MAX_PRODUCT_PRICE, fallback_sites: List[str] = None) -> Tuple[str, str, str, str]:
     now = _time.time()
@@ -388,7 +383,7 @@ def _find_product_from_sources(client: TLSClient, shop_url: str, min_price: floa
         if "429" in str(e):
             raise e
     
-    # ===== 4. جرب من /products.json (آخر حل) =====
+    # ===== 4. products.json (آخر حل) =====
     try:
         result = _find_product_from_products_json(client, shop_url, min_price, max_price)
         if result:
@@ -400,8 +395,6 @@ def _find_product_from_sources(client: TLSClient, shop_url: str, min_price: floa
     
     return None
 
-
-
 def _find_product_from_homepage(client: TLSClient, shop_url: str, min_price: float = MIN_PRODUCT_PRICE, max_price: float = MAX_PRODUCT_PRICE):
     try:
         resp = client.get(shop_url)
@@ -411,7 +404,6 @@ def _find_product_from_homepage(client: TLSClient, shop_url: str, min_price: flo
             return None
         
         html_content = resp.text
-        
         product_links = re.findall(r'href="([^"]*\/products\/[^"]+)"', html_content)
         
         if product_links:
@@ -425,7 +417,6 @@ def _find_product_from_homepage(client: TLSClient, shop_url: str, min_price: flo
                         continue
                     
                     html_content = resp.text
-                    
                     variant_match = re.search(r'"id"\s*:\s*"gid://shopify/ProductVariant/(\d+)"', html_content)
                     if not variant_match:
                         variant_match = re.search(r'data-variant-id="(\d+)"', html_content)
@@ -433,18 +424,14 @@ def _find_product_from_homepage(client: TLSClient, shop_url: str, min_price: flo
                         continue
                     
                     variant_id = variant_match.group(1)
-                    
                     price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html_content)
                     if price_match:
                         price = float(price_match.group(1))
-                        # ===== شرط السعر بين min و max =====
                         if min_price <= price <= max_price:
                             product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html_content)
                             product_id = product_match.group(1) if product_match else ""
-                            
                             title_match = re.search(r'"title"\s*:\s*"([^"]+)"', html_content)
                             title = title_match.group(1) if title_match else "Product"
-                            
                             return title, product_id, variant_id, str(price)
                 except:
                     continue
@@ -474,7 +461,6 @@ def _find_product_from_collections(client: TLSClient, shop_url: str, min_price: 
             return None
         
         html_content = resp.text
-        
         product_links = re.findall(r'href="([^"]*\/products\/[^"]+)"', html_content)
         
         if product_links:
@@ -488,7 +474,6 @@ def _find_product_from_collections(client: TLSClient, shop_url: str, min_price: 
                         continue
                     
                     html_content = resp.text
-                    
                     variant_match = re.search(r'"id"\s*:\s*"gid://shopify/ProductVariant/(\d+)"', html_content)
                     if not variant_match:
                         variant_match = re.search(r'data-variant-id="(\d+)"', html_content)
@@ -496,17 +481,14 @@ def _find_product_from_collections(client: TLSClient, shop_url: str, min_price: 
                         continue
                     
                     variant_id = variant_match.group(1)
-                    
                     price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html_content)
                     if price_match:
                         price = float(price_match.group(1))
                         if min_price <= price <= max_price:
                             product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html_content)
                             product_id = product_match.group(1) if product_match else ""
-                            
                             title_match = re.search(r'"title"\s*:\s*"([^"]+)"', html_content)
                             title = title_match.group(1) if title_match else "Product"
-                            
                             return title, product_id, variant_id, str(price)
                 except:
                     continue
@@ -567,7 +549,6 @@ def _find_product_from_search(client: TLSClient, shop_url: str, min_price: float
                         continue
                     
                     html_content = resp.text
-                    
                     variant_match = re.search(r'"id"\s*:\s*"gid://shopify/ProductVariant/(\d+)"', html_content)
                     if not variant_match:
                         variant_match = re.search(r'data-variant-id="(\d+)"', html_content)
@@ -575,17 +556,14 @@ def _find_product_from_search(client: TLSClient, shop_url: str, min_price: float
                         continue
                     
                     variant_id = variant_match.group(1)
-                    
                     price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html_content)
                     if price_match:
                         price = float(price_match.group(1))
                         if min_price <= price <= max_price:
                             product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html_content)
                             product_id = product_match.group(1) if product_match else ""
-                            
                             title_match = re.search(r'"title"\s*:\s*"([^"]+)"', html_content)
                             title = title_match.group(1) if title_match else "Product"
-                            
                             return title, product_id, variant_id, str(price)
                 except:
                     continue
@@ -606,7 +584,7 @@ def _find_product_from_products_json(client: TLSClient, shop_url: str, min_price
     variant_id = ""
     price_str = ""
     
-    resp = client.get(f"{shop_url}/products.json?limit=5&page=1")
+    resp = client.get(f"{shop_url}/products.json?limit=10&page=1")
     
     if resp.status_code == 429:
         with _site_429_cache_lock:
@@ -632,7 +610,6 @@ def _find_product_from_products_json(client: TLSClient, shop_url: str, min_price
                 price = float(v.get("price") or 0)
             except (ValueError, TypeError):
                 continue
-            # ===== شرط السعر بين min و max =====
             if price < min_price or price > max_price:
                 continue
             if price < best_price:
@@ -1026,7 +1003,7 @@ def send_pci_session(ident_sig: str, card_number: str, card_name: str,
         if proxy_url:
             session.proxies = {"http": proxy_url, "https": proxy_url}
         resp = session.post("https://checkout.pci.shopifyinc.com/sessions",
-                            data=payload, headers=headers, timeout=12)
+                            data=payload, headers=headers, timeout=10)
     return resp.status_code, resp.text
 
 # ──────────────────────── Proposal helpers ───────────────────────────
@@ -1681,7 +1658,7 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
     impersonate = random.choice(BROWSER_PROFILES)
     user_agent = random.choice(USER_AGENTS)
     
-    client = TLSClient(timeout=12, proxy_url=proxy_url,
+    client = TLSClient(timeout=10, proxy_url=proxy_url,
                        impersonate=impersonate, user_agent=user_agent)
     
     try:
