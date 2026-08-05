@@ -1,22 +1,20 @@
-# no_logs.py - إيقاف جميع الـ logs
+# no_logs.py
 
 import os
 import sys
 import logging
 import warnings
 
-# إيقاف warnings
-warnings.filterwarnings("ignore")
-
-# ===== إعادة توجيه stdout/stderr =====
+# ===== إيقاف جميع المخرجات =====
+# إعادة توجيه stdout/stderr
 sys.stdout = open(os.devnull, 'w')
 sys.stderr = open(os.devnull, 'w')
 
-# ===== تعطيل logging =====
-logging.basicConfig(level=logging.CRITICAL)
-logging.getLogger().setLevel(logging.CRITICAL)
+# تعطيل warnings
+warnings.filterwarnings("ignore")
 
-# تعطيل جميع loggers
+# تعطيل logging
+logging.basicConfig(level=logging.CRITICAL)
 for name in logging.root.manager.loggerDict:
     logger = logging.getLogger(name)
     logger.setLevel(logging.CRITICAL)
@@ -24,10 +22,18 @@ for name in logging.root.manager.loggerDict:
     logger.handlers = []
 
 # تعطيل loggers الخاصة بـ uvicorn
-logging.getLogger("uvicorn").disabled = True
-logging.getLogger("uvicorn.access").disabled = True
-logging.getLogger("uvicorn.error").disabled = True
+for name in ["uvicorn", "uvicorn.access", "uvicorn.error", "uvicorn.asgi"]:
+    logging.getLogger(name).disabled = True
 
-# ===== تعطيل حزم أخرى =====
-logging.getLogger("curl_cffi").disabled = True
-logging.getLogger("asyncio").disabled = True
+# ===== منع print =====
+import builtins
+_original_print = builtins.print
+def _silent_print(*args, **kwargs):
+    pass
+builtins.print = _silent_print
+
+# ===== إيقاف sys.excepthook =====
+import sys
+def _silent_excepthook(exc_type, exc_value, exc_traceback):
+    pass
+sys.excepthook = _silent_excepthook
