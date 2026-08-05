@@ -1,17 +1,21 @@
-from __future__ import annotations
+# checker.py - نسخة محسنة
 
-"""
-AutoShopify gate — wraps auto.py (curl_cffi TLS client) directly.
-Drops the old HTTP endpoint; all card checks go through run_checkout_for_card.
-"""
+from __future__ import annotations
 
 import random
 import threading as _threading
 import time as _time
+import os
+import sys
+import logging
 
 import requests as _requests
 import auto
 from config import SITE_FILE, SITE_LOW_FILE, SITE_MID_FILE
+
+# ===== إخفاء الـ logs =====
+sys.stderr = open(os.devnull, 'w')
+logging.getLogger().setLevel(logging.CRITICAL)
 
 _SITE_PATHS: dict[str, str] = {
     "random": SITE_FILE,
@@ -19,15 +23,12 @@ _SITE_PATHS: dict[str, str] = {
     "mid":    SITE_MID_FILE,
 }
 
-
 def _country_flag(code: str) -> str:
     try:
         return "".join(chr(0x1F1E6 + ord(c) - ord('A')) for c in code.upper() if 'A' <= c <= 'Z')
     except Exception:
         return ""
 
-
-# ── Dead-site cache ───────────────────────────────────────────────────────────
 _dead_sites: dict[str, float] = {}
 _dead_lock  = _threading.Lock()
 
@@ -47,14 +48,11 @@ _SITE_TTL = {
     "Step 0 failed":             90,
 }
 
-# ── Alive-site cache (per tier) ───────────────────────────────────────────────
 _alive_sites: dict[str, list[str]] = {}
 _alive_dirty: dict[str, bool]      = {t: True for t in _SITE_PATHS}
 
-
 def _norm_range(site_range: str | None) -> str:
     return site_range if site_range in _SITE_PATHS else "random"
-
 
 def _rebuild_alive(site_range: str = "random") -> None:
     global _alive_sites, _alive_dirty
@@ -68,7 +66,6 @@ def _rebuild_alive(site_range: str = "random") -> None:
     _alive_sites[tier] = [s for s in pool if s not in _dead_sites]
     _alive_dirty[tier] = False
 
-
 def _is_dead(site_url: str) -> bool:
     exp = _dead_sites.get(site_url)
     if exp is None:
@@ -78,7 +75,6 @@ def _is_dead(site_url: str) -> bool:
     with _dead_lock:
         _dead_sites.pop(site_url, None)
     return False
-
 
 def _mark_dead(site_url: str, error_str: str) -> None:
     global _alive_dirty
@@ -92,13 +88,9 @@ def _mark_dead(site_url: str, error_str: str) -> None:
                 _alive_dirty[t] = True
             return
 
-
 def dead_site_count() -> int:
     now = _time.time()
     return sum(1 for exp in _dead_sites.values() if exp > now)
-
-
-# ── Site lists (random / low / mid) ─────────────────────────────────────────
 
 def _load_sites(path: str) -> list[str]:
     try:
@@ -111,7 +103,6 @@ _sites: dict[str, list[str]] = {
     tier: _load_sites(path) for tier, path in _SITE_PATHS.items()
 }
 
-
 def _base_pool(site_range: str = "random") -> list[str]:
     tier = _norm_range(site_range)
     primary = _sites.get(tier) or []
@@ -121,7 +112,6 @@ def _base_pool(site_range: str = "random") -> list[str]:
         return _sites.get("random") or []
     return []
 
-
 def reload_sites() -> int:
     global _sites, _alive_dirty
     for tier, path in _SITE_PATHS.items():
@@ -129,221 +119,8 @@ def reload_sites() -> int:
         _alive_dirty[tier] = True
     return len(_sites.get("random") or [])
 
-
 def site_count(site_range: str = "random") -> int:
     return len(_base_pool(site_range))
-
-
-# ──────────────────────── Shopify Response Words ─────────────────────────────
-
-# ===== CHARGED (تم الدفع) =====
-_CHARGE_WORDS = (
-    "order_paid", "order_placed", "order_confirmed", "order_completed",
-    "successful", "succeeded", "success", "captured", 
-    "paid", "payment_success", "payment_successful",
-    "charge_success", "charge_successful",
-    "transaction_approved", "approved",
-    "receipt", "confirmation", "thank_you",
-    "completed", "done", "fulfilled",
-)
-
-# ===== APPROVED (موافقة - تحتاج تحقق) =====
-_APPROVED_EXACT = frozenset({"approved", "live", "success", "ccn live cvv", "live cvv"})
-
-_APPROVED_WORDS = (
-    # مشاكل الرصيد
-    "insufficient_funds", "insufficient funds",
-    "not_sufficient_funds", "not sufficient funds",
-    "insufficient_balance", "insufficient balance",
-    
-    # مشاكل ZIP/Postal
-    "incorrect_zip", "incorrect zip",
-    "invalid_zip", "invalid zip",
-    "incorrect_postal", "incorrect postal",
-    "invalid_postal", "invalid postal",
-    "postal_code_failure", "postal code failure",
-    
-    # مشاكل CVC/CVV
-    "incorrect_cvc", "incorrect cvc",
-    "incorrect_cvv", "incorrect cvv",
-    "invalid_cvc", "invalid cvc",
-    "invalid_cvv", "invalid cvv",
-    "cvc_failure", "cvv_failure",
-    "cvc_mismatch", "cvv_mismatch",
-    "security_code_failure", "security code failure",
-    
-    # 3DS
-    "3ds_authentication", "3ds_required", "3d_required",
-    "3d_authentication", "3ds-auth", "3d-secure", "3d secure",
-    "3d_redirect", "3ds", "3d",
-    "authentication_required", "auth required",
-    "otp_required", "otp required", "otp",
-    "challenge_required", "challenge required",
-    "two_factor", "two factor",
-    "redirect_required", "redirect required",
-    
-    # مشاكل رقم الكارت
-    "incorrect_number", "invalid_number",
-    "invalid_card_number", "invalid card number",
-    "card_number_invalid", "card number invalid",
-    
-    # مشاكل أخرى
-    "incorrect_name", "incorrect name",
-    "invalid_name", "invalid name",
-    "name_mismatch", "name mismatch",
-    "billing_address_mismatch", "billing address mismatch",
-    "address_verification_failed", "address verification failed",
-    "avs_failure", "avs failure",
-    "avs_mismatch", "avs mismatch",
-    
-    # مشاكل تاريخ الانتهاء
-    "incorrect_expiry", "incorrect expiry",
-    "invalid_expiry", "invalid expiry",
-    "expiry_date_invalid", "expiry date invalid",
-    
-    # موافقة مع تحذير
-    "auth_only", "auth only",
-    "pre_auth", "pre auth",
-    "authorization_held", "authorization held",
-    "pending", "pending_auth",
-)
-
-# ===== DECLINED (مرفوض) =====
-_DECLINED_EXACT = frozenset({"declined", "dead", "0", "invalid", "failed"})
-
-_DECLINED_WORDS = (
-    # مرفوض عام
-    "generic_decline", "generic decline",
-    "do_not_honor", 
-    "declined", "card_declined", "card declined",
-    "transaction_declined", "transaction declined",
-    "payment_declined", "payment declined",
-    
-    # احتيال
-    "fraud", "fraudulent", "fraud_suspected",
-    "suspected_fraud", "suspected fraud",
-    "high_risk", "high risk",
-    "risk_declined", "risk declined",
-    "velocity_check_failed", "velocity check failed",
-    
-    # مشاكل الكارت
-    "stolen_card", "lost_card", "pickup_card",
-    "restricted_card", "blocked_card",
-    "card_blocked", "card blocked",
-    "card_reported_lost", "card reported lost",
-    "card_reported_stolen", "card reported stolen",
-    
-    # انتهاء الصلاحية
-    "expired_card", "expired",
-    "card_expired", "card expired",
-    "expiry_date_passed", "expiry date passed",
-    
-    # معاملة غير مسموحة
-    "transaction_not_allowed",
-    "not_permitted", 
-    "permission_denied", "permission denied",
-    "operation_not_permitted", "operation not permitted",
-    
-    # مشاكل المعالج
-    "processor_declined", 
-    "processor_error", "processor error",
-    "processing_error", "processing error",
-    "gateway_rejected", "gateway rejected",
-    "acquirer_rejected", "acquirer rejected",
-    
-    # كارت غير مدعوم
-    "card_not_supported",
-    "card_type_not_supported", "card type not supported",
-    "brand_not_supported", "brand not supported",
-    "Credit card brand is not supported:",
-    
-    # عملة غير مدعومة
-    "currency_not_supported",
-    "currency_not_allowed", "currency not allowed",
-    
-    # مشاكل أخرى
-    "revocation_of_authorization",
-    "no_action_taken",
-    "your card was declined",
-    "payment_intent_authentication_failure",
-    "invalid_number",
-    "decision_rule_block",
-    "generic_error",
-    
-    # مشاكل المتجر
-    "buyer_identity_presentment_currency_does_not_match",
-    "delivery_no_delivery_strategy_available",
-    "this order is prevented due to suspect of fraud",
-    "order_prevented", "order prevented",
-    "fraud_check_failed", "fraud check failed",
-    
-    # مشاكل الحد
-    "limit_exceeded", "limit exceeded",
-    "exceeds_limit", "exceeds limit",
-    "over_limit", "over limit",
-    "credit_limit_exceeded", "credit limit exceeded",
-    
-    # مشاكل PIN
-    "incorrect_pin", "incorrect pin",
-    "invalid_pin", "invalid pin",
-    "pin_retry_exceeded", "pin retry exceeded",
-    
-    # مشاكل الحساب
-    "account_closed", "account closed",
-    "account_frozen", "account frozen",
-    "account_suspended", "account suspended",
-    "account_not_found", "account not found",
-    
-    # مشاكل الشبكة
-    "network_error", "network error",
-    "connection_error", "connection error",
-    "timeout", "timed_out", "time_out",
-    "retry_later", "try again later",
-)
-
-# ===== ERROR (أخطاء تقنية) =====
-_ERROR_WORDS = (
-    "internal_error", "internal server error",
-    "system_error", "system error",
-    "unexpected_error", "unexpected error",
-    "unknown_error", "unknown error",
-    "connection_refused", "connection refused",
-    "connection_timeout", "connection timeout",
-    "network_unreachable", "network unreachable",
-    "host_unreachable", "host unreachable",
-    "dns_error", "dns error",
-    "ssl_error", "ssl error",
-    "api_error", "api error",
-    "bad_request", "bad request",
-    "invalid_request", "invalid request",
-    "unauthorized",
-    "forbidden",
-    "not_found", "not found",
-    "method_not_allowed", "method not allowed",
-    "rate_limit_exceeded", "rate limit exceeded",
-    "too_many_requests", "too many requests",
-    "proxy_error", "proxy error",
-    "proxy_authentication_required", "proxy authentication required",
-    "proxy_connection_failed", "proxy connection failed",
-    "tunnel_connection_failed", "tunnel connection failed",
-    "session_expired", "session expired",
-    "invalid_session", "invalid session",
-    "session_not_found", "session not found",
-    "product_not_available", "product not available",
-    "out_of_stock", "out of stock",
-    "inventory_issue", "inventory issue",
-    "inventory_reservation_failure", "inventory reservation failure",
-    "product_not_found", "product not found",
-    "payment_processor_error", "payment processor error",
-    "payment_gateway_error", "payment gateway error",
-    "payment_method_not_available", "payment method not available",
-    "parsing_error", "parsing error",
-    "json_error", "json error",
-    "validation_error", "validation error",
-    "configuration_error", "configuration error",
-)
-
-# ── Gateway response normalization ─────────────────────────────────────────────
 
 _APPROVED_KEYWORDS = (
     "3DS_AUTHENTICATION", "3DS_AUTH", "3DS",
@@ -363,11 +140,10 @@ _DECLINED_KEYWORDS = (
 _INFRA_ERROR_KEYWORDS = (
     "STEP ", "FAILED:", "RETURNED 4", "RETURNED 5", "RETURNED 402",
     "RETURNED 422", "RETURNED 429", "CURL:", "CONNECT TUNNEL",
-    "COULD NOT EXTRACT", "COULD NOT", "POLL ", "EXCEEDED 30",
+    "COULD NOT EXTRACT", "COULD NOT", "POLL ", "EXCEEDED",
     "PROXY", "TIMEOUT", "TIMED OUT", "INVENTORYRESERVATIONFAILURE",
     "NO SHOPIFY", "SESSION", "LIBCURL",
 )
-
 
 def _exc_text(exc: BaseException | None) -> str:
     if exc is None:
@@ -376,43 +152,18 @@ def _exc_text(exc: BaseException | None) -> str:
         return str(exc.args[0])
     return str(exc) or ""
 
-
 def normalize_result(status: str, result_str: str) -> tuple[str, str]:
-    """Map gateway text to charged / approved / declined / error."""
     resp = (result_str or "").strip() or "UNKNOWN"
     up   = resp.upper()
-    lower = resp.lower()
 
-    # ===== 1. CHARGED =====
-    if any(k in lower for k in _CHARGE_WORDS):
-        return "charged", resp
-    
-    # ===== 2. ERROR =====
-    if any(k in lower for k in _ERROR_WORDS):
-        return "error", resp
-    
-    # ===== 3. APPROVED =====
-    if resp.lower() in _APPROVED_EXACT:
-        return "approved", resp
-    if any(k in lower for k in _APPROVED_WORDS):
-        return "approved", resp
-
-    # ===== 4. DECLINED =====
-    if status == "declined" or resp.lower() in _DECLINED_EXACT:
-        if not any(k in up for k in _INFRA_ERROR_KEYWORDS):
-            return "declined", resp
-
-    if any(k in lower for k in _DECLINED_WORDS):
-        if not any(k in up for k in _INFRA_ERROR_KEYWORDS):
-            return "declined", resp
-
-    # ===== 5. Fallback =====
     if any(k in up for k in ("ORDER_PLACED", "SUCCESSFULRECEIPT", "PROCESSEDRECEIPT")):
         return "charged", resp
-
     if any(k in up for k in _APPROVED_KEYWORDS):
-        if not any(k in up for k in _DECLINED_KEYWORDS):
-            return "approved", resp
+        return "approved", resp
+
+    if status == "declined" or any(k in up for k in _DECLINED_KEYWORDS):
+        if not any(k in up for k in _INFRA_ERROR_KEYWORDS):
+            return "declined", resp
 
     if status in ("charged", "approved", "declined"):
         return status, resp
@@ -425,7 +176,6 @@ def normalize_result(status: str, result_str: str) -> tuple[str, str]:
 
     return "error", resp
 
-
 def get_random_site(site_range: str = "random") -> str | None:
     tier = _norm_range(site_range)
     pool = _base_pool(tier)
@@ -437,12 +187,8 @@ def get_random_site(site_range: str = "random") -> str | None:
     pick  = alive if alive else pool
     return random.choice(pick)
 
-
-# ── Proxy helpers ─────────────────────────────────────────────────────────────
-
 def normalize_proxy(proxy: str) -> str:
     return auto.normalize_proxy(proxy)
-
 
 def validate_proxy(proxy: str) -> bool:
     try:
@@ -456,9 +202,7 @@ def validate_proxy(proxy: str) -> bool:
     except Exception:
         return False
 
-
 def validate_proxy_info(proxy: str) -> dict | None:
-    """Test proxy and return latency + geo info, or None if dead."""
     try:
         purl    = auto.normalize_proxy(proxy)
         session = _requests.Session()
@@ -488,11 +232,6 @@ def validate_proxy_info(proxy: str) -> dict | None:
         }
     except Exception:
         return None
-
-
-# ── Card checker ──────────────────────────────────────────────────────────────
-
-# checker.py - دالة check_card
 
 def check_card(cc: str, site: str, proxy: str) -> dict:
     proxy_url = ""
