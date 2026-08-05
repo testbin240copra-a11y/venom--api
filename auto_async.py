@@ -66,8 +66,8 @@ generate_attempt_token = _auto.generate_attempt_token
 generate_page_id = _auto.generate_page_id
 
 # ===== تعديلات السرعة =====
-MAX_PRODUCT_PAGES = 2  # كان 5
-MAX_PRODUCT_PRICE = 20.0  # أقصى سعر 20 دولار
+MAX_PRODUCT_PAGES = 5  # كان 5
+MAX_PRODUCT_PRICE = 50.0  # أقصى سعر 20 دولار
 MIN_PRODUCT_PRICE = 0.50  # أقل سعر 0.50 دولار
 MAX_POLL_ATTEMPTS = 15  # كان 31
 POLL_DELAY_MIN = 100  # كان 200
