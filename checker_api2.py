@@ -1,3 +1,5 @@
+# checker_api2.py - التعديلات
+
 from __future__ import annotations
 
 import asyncio
@@ -13,6 +15,22 @@ from typing import Optional
 import datetime
 
 warnings.filterwarnings("ignore")
+
+# ===== إيقاف جميع الـ Logs =====
+# إعادة توجيه جميع الـ logs إلى /dev/null
+sys.stderr = open(os.devnull, 'w')
+sys.stdout = open(os.devnull, 'w')
+
+# أو يمكنك تعطيل الـ logging بالكامل
+logging.basicConfig(level=logging.CRITICAL, stream=open(os.devnull, 'w'))
+logging.getLogger("uvicorn").setLevel(logging.CRITICAL)
+logging.getLogger("uvicorn.access").setLevel(logging.CRITICAL)
+logging.getLogger("uvicorn.error").setLevel(logging.CRITICAL)
+
+# إيقاف جميع الـ loggers
+for name in logging.root.manager.loggerDict:
+    logging.getLogger(name).setLevel(logging.CRITICAL)
+    logging.getLogger(name).disabled = True
 
 _here = Path(__file__).resolve().parent
 if str(_here) not in sys.path:
@@ -47,51 +65,20 @@ _stats = {
     "started":  time.strftime("%Y-%m-%d %H:%M:%S"),
 }
 
-# ── Live status display ───────────────────────────────────────────────────────
-# ── Redirect all logging to stderr so it never breaks the live display ────────
-logging.basicConfig(stream=sys.stderr, level=logging.ERROR,
-                    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-
-_live_lock  = threading.Lock()
+# ===== إيقاف العرض المباشر (Disable live display) =====
+_live_lock = threading.Lock()
 _live_ready = False
-_live_card  = ""
-_live_status= ""
-_live_resp  = ""
-
-_DISPLAY = (
-    "\033[2K\r⚡ Charge: {charged}  ✅ Approved: {approved}  "
-    "❌ Declined: {declined}  ⚠️  Error: {errors}  │  Active: {active}\n"
-    "\033[2K\rCard    : {card}\n"
-    "\033[2K\rStatus  : {status}\n"
-    "\033[2K\rResponse: {resp}"
-)
+_live_card = ""
+_live_status = ""
+_live_resp = ""
 
 def _render_live() -> None:
-    global _live_ready
-    block = _DISPLAY.format(
-        charged  = _stats["charged"],
-        approved = _stats["approved"],
-        declined = _stats["declined"],
-        errors   = _stats["errors"],
-        active   = _stats["active"],
-        card     = _live_card   or "—",
-        status   = _live_status or "—",
-        resp     = _live_resp   or "—",
-    )
-    with _live_lock:
-        if _live_ready:
-            sys.stdout.write("\033[4A")   # ارجع 4 أسطر
-        sys.stdout.write(block)
-        sys.stdout.write("\n")
-        sys.stdout.flush()
-        _live_ready = True
+    # لا تفعل شيئاً - إيقاف الـ display
+    pass
 
 def _update_live(card: str = "", status: str = "", response: str = "") -> None:
-    global _live_card, _live_status, _live_resp
-    if card:     _live_card   = card
-    if status:   _live_status = status
-    if response: _live_resp   = response
-
+    # لا تفعل شيئاً
+    pass
 
 def is_memory_exceeded() -> bool:
     if not MEMORY_CHECK_ENABLED or psutil is None:
@@ -114,11 +101,22 @@ def _save_dump(card: str, site: str, status: str, result: str, amount: str):
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    # طباعة الحالة الأولى عند بدء الخادم
-    _render_live()
+    # لا تطبع أي شيء عند بدء الخادم
     yield
 
 app = FastAPI(title="VeNoM", docs_url=None, redoc_url=None, lifespan=_lifespan)
+
+# ===== إخفاء طلبات الـ API من الـ logs =====
+import uvicorn.access
+import uvicorn.error
+
+class NoLogsAccessFormatter(uvicorn.access.AccessFormatter):
+    def format(self, record):
+        return ""  # لا تطبع أي شيء
+
+class NoLogsErrorFormatter(uvicorn.error.ErrorFormatter):
+    def format(self, record):
+        return ""  # لا تطبع أي شيء
 
 @app.get("/VeNoM-status")
 async def status():
@@ -179,12 +177,6 @@ async def check(
 
     if status in ("charged", "approved", "declined"):
         _save_dump(cc, site, status, result.get("result", ""), result.get("amount", "0"))
-        _update_live(
-            card=cc,
-            status={"charged":"Charged","approved":"Approved","declined":"Declined"}.get(status, status),
-            response=result.get("result", ""),
-        )
-        _render_live()
 
     bot_status = {"charged":"Charged","approved":"Approved","declined":"Declined"}.get(status,"SiteError")
 
@@ -199,12 +191,15 @@ async def check(
     })
 
 if __name__ == "__main__":
+    # ===== تشغيل Uvicorn بدون Logs =====
     uvicorn.run(
         "checker_api2:app",
         host="0.0.0.0",
         port=PORT,
         loop="uvloop",
-        access_log=False,
+        access_log=False,  # إيقاف access logs
+        log_level="critical",  # أقل مستوى للـ logs
         backlog=4096,
-        timeout_keep_alive=55
+        timeout_keep_alive=30,
+        workers=2,
     )
