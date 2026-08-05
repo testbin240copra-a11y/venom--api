@@ -1,4 +1,4 @@
-# checker_api2.py
+# checker_api2.py - بدون Display
 
 from __future__ import annotations
 
@@ -13,30 +13,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 import datetime
-
-# ===== إيقاف جميع الـ Logs بشكل نهائي =====
-# 1. إعادة توجيه stdout/stderr إلى /dev/null
-sys.stdout = open(os.devnull, 'w')
-sys.stderr = open(os.devnull, 'w')
-
-# 2. تعطيل logging تماماً
-logging.basicConfig(level=logging.CRITICAL)
-for name in logging.root.manager.loggerDict:
-    logging.getLogger(name).disabled = True
-    logging.getLogger(name).handlers = []
-
-# 3. تعطيل loggers الخاصة بـ uvicorn
-logging.getLogger("uvicorn").disabled = True
-logging.getLogger("uvicorn.access").disabled = True
-logging.getLogger("uvicorn.error").disabled = True
-logging.getLogger("uvicorn.asgi").disabled = True
-
-# 4. منع أي مخرجات من print
-import builtins
-_original_print = builtins.print
-def _silent_print(*args, **kwargs):
-    pass
-builtins.print = _silent_print
 
 warnings.filterwarnings("ignore")
 
@@ -73,11 +49,28 @@ _stats = {
     "started":  time.strftime("%Y-%m-%d %H:%M:%S"),
 }
 
-# ===== إيقاف الـ Live Display =====
+# ===== إخفاء جميع الـ Logs =====
+# إعادة توجيه stdout/stderr
+sys.stdout = open(os.devnull, 'w')
+sys.stderr = open(os.devnull, 'w')
+
+# تعطيل logging
+logging.basicConfig(level=logging.CRITICAL)
+for name in logging.root.manager.loggerDict:
+    logging.getLogger(name).disabled = True
+    logging.getLogger(name).handlers = []
+
+# تعطيل loggers الخاصة بـ uvicorn
+logging.getLogger("uvicorn").disabled = True
+logging.getLogger("uvicorn.access").disabled = True
+logging.getLogger("uvicorn.error").disabled = True
+
 def _render_live() -> None:
+    # لا تفعل شيئاً
     pass
 
 def _update_live(card: str = "", status: str = "", response: str = "") -> None:
+    # لا تفعل شيئاً
     pass
 
 def is_memory_exceeded() -> bool:
@@ -101,21 +94,10 @@ def _save_dump(card: str, site: str, status: str, result: str, amount: str):
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    # لا تطبع أي شيء
     yield
 
 app = FastAPI(title="VeNoM", docs_url=None, redoc_url=None, lifespan=_lifespan)
-
-# ===== تعطيل logging لـ uvicorn =====
-import uvicorn.access
-import uvicorn.error
-
-class SilentAccessFormatter(uvicorn.access.AccessFormatter):
-    def format(self, record):
-        return ""
-
-class SilentErrorFormatter(uvicorn.error.ErrorFormatter):
-    def format(self, record):
-        return ""
 
 @app.get("/VeNoM-status")
 async def status():
@@ -190,7 +172,6 @@ async def check(
     })
 
 if __name__ == "__main__":
-    # ===== تشغيل مع إخفاء جميع الـ logs =====
     uvicorn.run(
         "checker_api2:app",
         host="0.0.0.0",
@@ -201,5 +182,5 @@ if __name__ == "__main__":
         backlog=4096,
         timeout_keep_alive=30,
         workers=2,
-        log_config=None,  # إزالة التهيئة الافتراضية للـ logs
+        log_config=None,
     )
