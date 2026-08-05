@@ -1,4 +1,4 @@
-# checker_api2.py - مع إضافة receipt_url في الـ Response و dump.txt
+# checker_api2.py - مع إضافة receipt_url و timeout
 
 from __future__ import annotations
 
@@ -77,7 +77,6 @@ def is_memory_exceeded() -> bool:
     except Exception:
         return False
 
-# ===== تعديل دالة _save_dump لإضافة receipt_url =====
 def _save_dump(card: str, site: str, status: str, result: str, amount: str, receipt_url: str = ""):
     try:
         with open("dump.txt", "a", encoding="utf-8") as f:
@@ -131,7 +130,25 @@ async def check(
     t0 = asyncio.get_event_loop().time()
 
     try:
-        result = await checker_async.check_card_async(cc, site, proxy or "", max_price)
+        # ===== إضافة timeout =====
+        result = await asyncio.wait_for(
+            checker_async.check_card_async(cc, site, proxy or "", max_price),
+            timeout=30
+        )
+    except asyncio.TimeoutError:
+        async with stats_lock:
+            _stats["errors"] += 1
+            _stats["active"] -= 1
+        return JSONResponse({
+            "Status": "SiteError",
+            "Response": "Request timeout after 30s",
+            "Price": "-",
+            "Gateway": "VeNoM",
+            "Card": cc,
+            "site": site,
+            "elapsed": round(asyncio.get_event_loop().time() - t0, 2),
+            "receipt_url": ""
+        })
     except Exception as e:
         async with stats_lock:
             _stats["errors"] += 1
@@ -144,6 +161,7 @@ async def check(
             "Card":     cc,
             "site":     site,
             "elapsed":  round(asyncio.get_event_loop().time() - t0, 2),
+            "receipt_url": ""
         })
 
     elapsed = round(asyncio.get_event_loop().time() - t0, 2)
@@ -154,12 +172,10 @@ async def check(
         _stats["active"] -= 1
 
     if status in ("charged", "approved", "declined"):
-        # ===== تمرير receipt_url إلى _save_dump =====
         _save_dump(cc, site, status, result.get("result", ""), result.get("amount", "0"), result.get("receipt_url", ""))
 
     bot_status = {"charged":"Charged","approved":"Approved","declined":"Declined"}.get(status,"SiteError")
 
-    # ===== إضافة receipt_url في الـ Response =====
     return JSONResponse({
         "Status":   bot_status,
         "Response": result.get("result", ""),
@@ -168,7 +184,7 @@ async def check(
         "Card":     cc,
         "site":     site,
         "elapsed":  elapsed,
-        "receipt_url": result.get("receipt_url", ""),  # <-- إضافة هذا السطر
+        "receipt_url": result.get("receipt_url", ""),
     })
 
 if __name__ == "__main__":
@@ -181,6 +197,6 @@ if __name__ == "__main__":
         log_level="critical",
         backlog=4096,
         timeout_keep_alive=30,
-        workers=4,
+        workers=2,
         log_config=None,
     )
