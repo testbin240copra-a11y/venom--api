@@ -1,4 +1,4 @@
-# checker_api2.py
+# checker_api2.py - مع إضافة max_price
 
 from __future__ import annotations
 
@@ -26,32 +26,17 @@ from fastapi.responses import JSONResponse
 
 import checker_async
 
-# ===== إعدادات متوازنة =====
-CONCURRENT_PER_SITE = int(os.environ.get("CONCURRENT_PER_SITE", "2"))
-POLL_ATTEMPTS = int(os.environ.get("POLL_ATTEMPTS", "12"))
-POLL_DELAY_MS = int(os.environ.get("POLL_DELAY_MS", "300"))
-REQUEST_DELAY = float(os.environ.get("REQUEST_DELAY", "5.0"))
-MAX_PRODUCT_PRICE = float(os.environ.get("MAX_PRODUCT_PRICE", "25.0"))
+try:
+    import psutil
+    MEMORY_CHECK_ENABLED = True
+except ImportError:
+    psutil = None
+    MEMORY_CHECK_ENABLED = False
 
-# تحديث الإعدادات
-checker_async.CONCURRENT_PER_SITE = CONCURRENT_PER_SITE
-auto_async.POLL_ATTEMPTS = POLL_ATTEMPTS
-auto_async.POLL_DELAY_MS = POLL_DELAY_MS
-auto_async.REQUEST_DELAY = REQUEST_DELAY
-auto_async.MAX_PRODUCT_PRICE = MAX_PRODUCT_PRICE
-
-sys.stdout = open(os.devnull, 'w')
-sys.stderr = open(os.devnull, 'w')
-
-logging.basicConfig(level=logging.CRITICAL)
-for name in logging.root.manager.loggerDict:
-    logging.getLogger(name).disabled = True
-    logging.getLogger(name).handlers = []
-
-for name in ["uvicorn", "uvicorn.access", "uvicorn.error", "uvicorn.asgi"]:
-    logging.getLogger(name).disabled = True
+MEMORY_LIMIT_PERCENT = 90
 
 PORT = int(os.environ.get("CHECKER_PORT", os.environ.get("PORT", "6667")))
+stats_lock = asyncio.Lock()
 
 _stats = {
     "active":   0,
@@ -62,10 +47,40 @@ _stats = {
     "errors":   0,
     "by":       "VeNoM",
     "started":  time.strftime("%Y-%m-%d %H:%M:%S"),
-    "workers":  CONCURRENT_PER_SITE,
 }
 
-_stats_lock = asyncio.Lock()
+# ===== إخفاء جميع الـ Logs =====
+# إعادة توجيه stdout/stderr
+sys.stdout = open(os.devnull, 'w')
+sys.stderr = open(os.devnull, 'w')
+
+# تعطيل logging
+logging.basicConfig(level=logging.CRITICAL)
+for name in logging.root.manager.loggerDict:
+    logging.getLogger(name).disabled = True
+    logging.getLogger(name).handlers = []
+
+# تعطيل loggers الخاصة بـ uvicorn
+logging.getLogger("uvicorn").disabled = True
+logging.getLogger("uvicorn.access").disabled = True
+logging.getLogger("uvicorn.error").disabled = True
+
+def _render_live() -> None:
+    # لا تفعل شيئاً
+    pass
+
+def _update_live(card: str = "", status: str = "", response: str = "") -> None:
+    # لا تفعل شيئاً
+    pass
+
+def is_memory_exceeded() -> bool:
+    if not MEMORY_CHECK_ENABLED or psutil is None:
+        return False
+    try:
+        mem = psutil.virtual_memory()
+        return mem.percent >= MEMORY_LIMIT_PERCENT
+    except Exception:
+        return False
 
 def _save_dump(card: str, site: str, status: str, result: str, amount: str):
     try:
@@ -79,6 +94,7 @@ def _save_dump(card: str, site: str, status: str, result: str, amount: str):
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    # لا تطبع أي شيء
     yield
 
 app = FastAPI(title="VeNoM", docs_url=None, redoc_url=None, lifespan=_lifespan)
@@ -93,8 +109,11 @@ async def check(
     cc:    Optional[str] = Query(None),
     site:  Optional[str] = Query(None),
     proxy: Optional[str] = Query(None),
-    max_price: Optional[float] = Query(25.0),
+    max_price: Optional[float] = Query(20.0),  # ===== أقصى سعر 20 دولار =====
 ):
+    if is_memory_exceeded():
+        return JSONResponse({"error": "Server is busy"}, status_code=503)
+
     if request.method == "POST":
         try:
             body = await request.json()
@@ -110,16 +129,17 @@ async def check(
     if not site:
         return JSONResponse({"error": "Missing site"}, status_code=400)
 
-    async with _stats_lock:
+    async with stats_lock:
         _stats["active"] += 1
         _stats["total"]  += 1
 
     t0 = asyncio.get_event_loop().time()
 
     try:
-        result = await checker_async.check_card_async(cc, site, proxy or "", max_price or MAX_PRODUCT_PRICE)
+        # ===== تمرير max_price إلى checker_async =====
+        result = await checker_async.check_card_async(cc, site, proxy or "", max_price)
     except Exception as e:
-        async with _stats_lock:
+        async with stats_lock:
             _stats["errors"] += 1
             _stats["active"] -= 1
         return JSONResponse({
@@ -135,7 +155,7 @@ async def check(
     elapsed = round(asyncio.get_event_loop().time() - t0, 2)
     status  = result.get("status", "error")
 
-    async with _stats_lock:
+    async with stats_lock:
         _stats[{"charged":"charged","approved":"approved","declined":"declined"}.get(status,"errors")] += 1
         _stats["active"] -= 1
 
@@ -165,6 +185,5 @@ if __name__ == "__main__":
         backlog=4096,
         timeout_keep_alive=30,
         workers=2,
-        limit_concurrency=50,
         log_config=None,
     )
