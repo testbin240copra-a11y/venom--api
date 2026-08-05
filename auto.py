@@ -310,7 +310,11 @@ def _extract_products_from_json(data: dict) -> List[Tuple[str, str, str, str]]:
 
 # ──────────────────────── Find product (without 429) ─────────────────
 
-def find_cheapest_product(client: TLSClient, shop_url: str, min_price: float = 0.50, fallback_sites: List[str] = None) -> Tuple[str, str, str, str]:
+
+MAX_PRODUCT_PRICE = 20.0  # أقصى سعر 20 دولار
+MIN_PRODUCT_PRICE = 0.50  # أقل سعر
+
+def find_cheapest_product(client: TLSClient, shop_url: str, min_price: float = MIN_PRODUCT_PRICE, max_price: float = MAX_PRODUCT_PRICE, fallback_sites: List[str] = None) -> Tuple[str, str, str, str]:
     now = _time.time()
     
     with _site_429_cache_lock:
@@ -321,7 +325,7 @@ def find_cheapest_product(client: TLSClient, shop_url: str, min_price: float = 0
                     for alt_site in fallback_sites[:5]:
                         if alt_site != shop_url:
                             try:
-                                return find_cheapest_product(client, alt_site, min_price, None)
+                                return find_cheapest_product(client, alt_site, min_price, max_price, None)
                             except:
                                 continue
                 raise Exception(f"Site blocked (429) - no working fallback")
@@ -334,7 +338,7 @@ def find_cheapest_product(client: TLSClient, shop_url: str, min_price: float = 0
             return cached[:-1]
     
     try:
-        result = _find_product_from_sources(client, shop_url, min_price)
+        result = _find_product_from_sources(client, shop_url, min_price, max_price)
         if result:
             with _product_cache_lock:
                 _product_cache[shop_url] = (*result, now)
@@ -348,18 +352,18 @@ def find_cheapest_product(client: TLSClient, shop_url: str, min_price: float = 0
                 for alt_site in fallback_sites[:5]:
                     if alt_site != shop_url:
                         try:
-                            return find_cheapest_product(client, alt_site, min_price, None)
+                            return find_cheapest_product(client, alt_site, min_price, max_price, None)
                         except:
                             continue
             raise Exception(f"Site returned 429 - no working fallback")
         raise e
     
-    raise Exception(f"No available products above ${min_price:.2f} at {shop_url}")
+    raise Exception(f"No available products between ${min_price:.2f} and ${max_price:.2f} at {shop_url}")
 
-def _find_product_from_sources(client: TLSClient, shop_url: str, min_price: float = 0.50):
+def _find_product_from_sources(client: TLSClient, shop_url: str, min_price: float = MIN_PRODUCT_PRICE, max_price: float = MAX_PRODUCT_PRICE):
     # ===== 1. جرب من /collections/all =====
     try:
-        result = _find_product_from_collections(client, shop_url, min_price)
+        result = _find_product_from_collections(client, shop_url, min_price, max_price)
         if result:
             return result
     except Exception as e:
@@ -368,7 +372,7 @@ def _find_product_from_sources(client: TLSClient, shop_url: str, min_price: floa
     
     # ===== 2. جرب من /search =====
     try:
-        result = _find_product_from_search(client, shop_url, min_price)
+        result = _find_product_from_search(client, shop_url, min_price, max_price)
         if result:
             return result
     except Exception as e:
@@ -377,7 +381,7 @@ def _find_product_from_sources(client: TLSClient, shop_url: str, min_price: floa
     
     # ===== 3. جرب من الصفحة الرئيسية =====
     try:
-        result = _find_product_from_homepage(client, shop_url, min_price)
+        result = _find_product_from_homepage(client, shop_url, min_price, max_price)
         if result:
             return result
     except Exception as e:
@@ -386,7 +390,7 @@ def _find_product_from_sources(client: TLSClient, shop_url: str, min_price: floa
     
     # ===== 4. جرب من /products.json (آخر حل) =====
     try:
-        result = _find_product_from_products_json(client, shop_url, min_price)
+        result = _find_product_from_products_json(client, shop_url, min_price, max_price)
         if result:
             return result
     except Exception as e:
@@ -396,7 +400,9 @@ def _find_product_from_sources(client: TLSClient, shop_url: str, min_price: floa
     
     return None
 
-def _find_product_from_homepage(client: TLSClient, shop_url: str, min_price: float = 0.50):
+
+
+def _find_product_from_homepage(client: TLSClient, shop_url: str, min_price: float = MIN_PRODUCT_PRICE, max_price: float = MAX_PRODUCT_PRICE):
     try:
         resp = client.get(shop_url)
         if resp.status_code == 429:
@@ -431,7 +437,8 @@ def _find_product_from_homepage(client: TLSClient, shop_url: str, min_price: flo
                     price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html_content)
                     if price_match:
                         price = float(price_match.group(1))
-                        if price >= min_price:
+                        # ===== شرط السعر بين min و max =====
+                        if min_price <= price <= max_price:
                             product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html_content)
                             product_id = product_match.group(1) if product_match else ""
                             
@@ -448,7 +455,8 @@ def _find_product_from_homepage(client: TLSClient, shop_url: str, min_price: flo
                 data = json.loads(json_match.group(1))
                 products = _extract_products_from_json(data)
                 for title, product_id, variant_id, price in products:
-                    if float(price) >= min_price:
+                    price_val = float(price)
+                    if min_price <= price_val <= max_price:
                         return title, product_id, variant_id, price
             except:
                 pass
@@ -457,7 +465,7 @@ def _find_product_from_homepage(client: TLSClient, shop_url: str, min_price: flo
     except:
         return None
 
-def _find_product_from_collections(client: TLSClient, shop_url: str, min_price: float = 0.50):
+def _find_product_from_collections(client: TLSClient, shop_url: str, min_price: float = MIN_PRODUCT_PRICE, max_price: float = MAX_PRODUCT_PRICE):
     try:
         resp = client.get(f"{shop_url}/collections/all")
         if resp.status_code == 429:
@@ -492,7 +500,7 @@ def _find_product_from_collections(client: TLSClient, shop_url: str, min_price: 
                     price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html_content)
                     if price_match:
                         price = float(price_match.group(1))
-                        if price >= min_price:
+                        if min_price <= price <= max_price:
                             product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html_content)
                             product_id = product_match.group(1) if product_match else ""
                             
@@ -511,7 +519,7 @@ def _find_product_from_collections(client: TLSClient, shop_url: str, min_price: 
                     for v in p.get('variants', []):
                         if v.get('available', False):
                             price = float(v.get('price', 0))
-                            if price >= min_price:
+                            if min_price <= price <= max_price:
                                 return p.get('title', ''), str(p.get('id', '')), str(v.get('id', '')), v.get('price', '0')
         except:
             pass
@@ -520,7 +528,7 @@ def _find_product_from_collections(client: TLSClient, shop_url: str, min_price: 
     except:
         return None
 
-def _find_product_from_search(client: TLSClient, shop_url: str, min_price: float = 0.50):
+def _find_product_from_search(client: TLSClient, shop_url: str, min_price: float = MIN_PRODUCT_PRICE, max_price: float = MAX_PRODUCT_PRICE):
     try:
         resp = client.get(f"{shop_url}/search?q=*&view=json")
         if resp.status_code == 429:
@@ -534,7 +542,7 @@ def _find_product_from_search(client: TLSClient, shop_url: str, min_price: float
                         for v in p.get('variants', []):
                             if v.get('available', False):
                                 price = float(v.get('price', 0))
-                                if price >= min_price:
+                                if min_price <= price <= max_price:
                                     return p.get('title', ''), str(p.get('id', '')), str(v.get('id', '')), v.get('price', '0')
             except:
                 pass
@@ -571,7 +579,7 @@ def _find_product_from_search(client: TLSClient, shop_url: str, min_price: float
                     price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html_content)
                     if price_match:
                         price = float(price_match.group(1))
-                        if price >= min_price:
+                        if min_price <= price <= max_price:
                             product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html_content)
                             product_id = product_match.group(1) if product_match else ""
                             
@@ -586,7 +594,7 @@ def _find_product_from_search(client: TLSClient, shop_url: str, min_price: float
     except:
         return None
 
-def _find_product_from_products_json(client: TLSClient, shop_url: str, min_price: float = 0.50):
+def _find_product_from_products_json(client: TLSClient, shop_url: str, min_price: float = MIN_PRODUCT_PRICE, max_price: float = MAX_PRODUCT_PRICE):
     with _site_429_cache_lock:
         if shop_url in _site_429_cache:
             if _time.time() - _site_429_cache[shop_url] < _SITE_429_TTL:
@@ -624,7 +632,8 @@ def _find_product_from_products_json(client: TLSClient, shop_url: str, min_price
                 price = float(v.get("price") or 0)
             except (ValueError, TypeError):
                 continue
-            if price < min_price:
+            # ===== شرط السعر بين min و max =====
+            if price < min_price or price > max_price:
                 continue
             if price < best_price:
                 best_price = price
@@ -634,7 +643,7 @@ def _find_product_from_products_json(client: TLSClient, shop_url: str, min_price
                 price_str = v.get("price", "")
     
     if not product_title:
-        raise Exception(f"No available products above ${min_price:.2f} at {shop_url}")
+        raise Exception(f"No available products between ${min_price:.2f} and ${max_price:.2f} at {shop_url}")
     
     return product_title, product_id, variant_id, price_str
 
