@@ -1,5 +1,3 @@
-# auto.py - النسخة الكاملة مع التعديلات
-
 import json
 import random
 import re
@@ -21,10 +19,6 @@ from pathlib import Path
 
 from curl_cffi import requests
 from curl_cffi.requests import Session, BrowserType
-
-# ===== إعدادات السرعة =====
-POLL_ATTEMPTS = int(os.environ.get("POLL_ATTEMPTS", "8"))
-POLL_DELAY_MS = int(os.environ.get("POLL_DELAY_MS", "80"))
 
 # ──────────────────────── config ─────────────────────────────────────
 
@@ -443,6 +437,7 @@ def _find_product_from_homepage(client: TLSClient, shop_url: str, min_price: flo
                     price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html_content)
                     if price_match:
                         price = float(price_match.group(1))
+                        # ===== شرط السعر بين min و max =====
                         if min_price <= price <= max_price:
                             product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html_content)
                             product_id = product_match.group(1) if product_match else ""
@@ -637,6 +632,7 @@ def _find_product_from_products_json(client: TLSClient, shop_url: str, min_price
                 price = float(v.get("price") or 0)
             except (ValueError, TypeError):
                 continue
+            # ===== شرط السعر بين min و max =====
             if price < min_price or price > max_price:
                 continue
             if price < best_price:
@@ -1918,8 +1914,7 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
         poll_delay_re = re.compile(r'"pollDelay"\s*:\s*(\d+)')
         type_name_re = re.compile(r'"__typename"\s*:\s*"(ProcessingReceipt|FailedReceipt|SuccessfulReceipt|ProcessedReceipt|ActionRequiredReceipt)"')
         
-        # ===== استخدام POLL_ATTEMPTS بدلاً من 30 =====
-        for poll_num in range(1, POLL_ATTEMPTS + 1):
+        for poll_num in range(1, 31):
             try:
                 _, poll_body = send_poll_for_receipt(
                     client, shop_url, checkout_url, checkout_token, session_token,
@@ -1982,17 +1977,16 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
                         result.error = Exception(f"{error_code}")
                         return result
                 
-                # ===== استخدام POLL_DELAY_MS بدلاً من 500 =====
-                delay = POLL_DELAY_MS
+                delay = 500
                 match = poll_delay_re.search(poll_body)
                 if match:
                     try:
                         d = int(match.group(1))
                         if d > 0:
-                            delay = min(d, POLL_DELAY_MS)
+                            delay = d
                     except ValueError:
                         pass
-                time.sleep(min(delay, POLL_DELAY_MS) / 1000.0)
+                time.sleep(min(delay, 300) / 1000.0)
                 
             except Exception as e:
                 result.status = CheckStatus.ERROR
@@ -2000,7 +1994,7 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
                 return result
         
         result.status = CheckStatus.ERROR
-        result.error = Exception("exceeded poll attempts")
+        result.error = Exception("exceeded 30 poll attempts")
         return result
         
     finally:
