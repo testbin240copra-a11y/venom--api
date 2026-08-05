@@ -1,44 +1,34 @@
-# checker_async.py
-
-"""
-Async card checker — wraps auto_async.run_checkout_for_card_async.
-Reuses checker.py's site cache (_sites, _alive_sites, _mark_dead, etc.)
-"""
+# checker_async.py - نسخة محسنة للسرعة القصوى
 
 import asyncio
+import os
+import sys
+import logging
+import random
 
 import auto_async
 import checker
 from auto import CheckStatus
-import os
-import sys
-import logging
 
-# إخفاء الـ logs
+# ===== إخفاء الـ logs =====
 sys.stderr = open(os.devnull, 'w')
 logging.getLogger().setLevel(logging.CRITICAL)
 
-# Per-site semaphore — max 1 concurrent request per site to avoid 429
+# ===== إعدادات التزامن =====
+CONCURRENT_PER_SITE = int(os.environ.get("CONCURRENT_PER_SITE", "5"))
 _site_sems: dict[str, asyncio.Semaphore] = {}
 _site_sems_lock = asyncio.Lock()
 
 async def _get_site_sem(site: str) -> asyncio.Semaphore:
     async with _site_sems_lock:
         if site not in _site_sems:
-            _site_sems[site] = asyncio.Semaphore(1)
+            _site_sems[site] = asyncio.Semaphore(CONCURRENT_PER_SITE)
         return _site_sems[site]
 
 async def check_card_async(cc: str, site: str, proxy: str, max_price: float = 20.0) -> dict:
     """
     فحص البطاقة مع تحديد أقصى سعر للمنتج
-    
-    Args:
-        cc: البطاقة بصيغة رقم|شهر|سنة|CVV
-        site: رابط المتجر
-        proxy: البروكسي
-        max_price: أقصى سعر للمنتج (افتراضي 20 دولار)
     """
-    # لو الموقع ميت خذ بديل تلقائياً
     if checker._is_dead(site):
         alt = checker.get_random_site()
         if alt and alt != site:
