@@ -116,13 +116,17 @@ class AsyncTLSClient:
             await self._session.close()
             self._session = None
 
-MAX_PRODUCT_PAGES = 1
+MAX_PRODUCT_PAGES = 5
 
 def _is_cf_body(body: str) -> bool:
     lo = body.lower()
     return "1003" in body or "cloudflare" in lo or "cf_managed_challenge" in lo or "challenge" in lo
 
-async def find_cheapest_product(client: AsyncTLSClient, shop_url: str, min_price: float = 0.50):
+MAX_PRODUCT_PRICE = 20.0
+MIN_PRODUCT_PRICE = 0.50
+MAX_PRODUCT_PAGES = 5
+
+async def find_cheapest_product(client: AsyncTLSClient, shop_url: str, min_price: float = MIN_PRODUCT_PRICE, max_price: float = MAX_PRODUCT_PRICE):
     """
     تدور على منتج رخيص في الموقع من غير ما تجيب 429 (النسخة Async)
     """
@@ -133,25 +137,27 @@ async def find_cheapest_product(client: AsyncTLSClient, shop_url: str, min_price
             html = resp.text
             product_links = re.findall(r'href="([^"]*\/products\/[^"]+)"', html)
             if product_links:
-                link = product_links[0]
-                if not link.startswith('http'):
-                    link = shop_url + link
-                
-                resp = await client.get(link)
-                if resp.status_code == 200:
-                    html = resp.text
-                    variant_match = re.search(r'"id"\s*:\s*"gid://shopify/ProductVariant/(\d+)"', html)
-                    if not variant_match:
-                        variant_match = re.search(r'data-variant-id="(\d+)"', html)
-                    if variant_match:
-                        variant_id = variant_match.group(1)
-                        price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html)
-                        price = price_match.group(1) if price_match else "0.00"
-                        product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html)
-                        product_id = product_match.group(1) if product_match else ""
-                        title_match = re.search(r'"title"\s*:\s*"([^"]+)"', html)
-                        title = title_match.group(1) if title_match else "Product"
-                        return title, product_id, "", variant_id, price
+                for link in product_links[:5]:
+                    if not link.startswith('http'):
+                        link = shop_url + link
+                    
+                    resp = await client.get(link)
+                    if resp.status_code == 200:
+                        html = resp.text
+                        variant_match = re.search(r'"id"\s*:\s*"gid://shopify/ProductVariant/(\d+)"', html)
+                        if not variant_match:
+                            variant_match = re.search(r'data-variant-id="(\d+)"', html)
+                        if variant_match:
+                            variant_id = variant_match.group(1)
+                            price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html)
+                            if price_match:
+                                price = float(price_match.group(1))
+                                if min_price <= price <= max_price:
+                                    product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html)
+                                    product_id = product_match.group(1) if product_match else ""
+                                    title_match = re.search(r'"title"\s*:\s*"([^"]+)"', html)
+                                    title = title_match.group(1) if title_match else "Product"
+                                    return title, product_id, "", variant_id, str(price)
     except:
         pass
     
@@ -162,25 +168,27 @@ async def find_cheapest_product(client: AsyncTLSClient, shop_url: str, min_price
             html = resp.text
             product_links = re.findall(r'href="([^"]*\/products\/[^"]+)"', html)
             if product_links:
-                link = product_links[0]
-                if not link.startswith('http'):
-                    link = shop_url + link
-                
-                resp = await client.get(link)
-                if resp.status_code == 200:
-                    html = resp.text
-                    variant_match = re.search(r'"id"\s*:\s*"gid://shopify/ProductVariant/(\d+)"', html)
-                    if not variant_match:
-                        variant_match = re.search(r'data-variant-id="(\d+)"', html)
-                    if variant_match:
-                        variant_id = variant_match.group(1)
-                        price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html)
-                        price = price_match.group(1) if price_match else "0.00"
-                        product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html)
-                        product_id = product_match.group(1) if product_match else ""
-                        title_match = re.search(r'"title"\s*:\s*"([^"]+)"', html)
-                        title = title_match.group(1) if title_match else "Product"
-                        return title, product_id, "", variant_id, price
+                for link in product_links[:5]:
+                    if not link.startswith('http'):
+                        link = shop_url + link
+                    
+                    resp = await client.get(link)
+                    if resp.status_code == 200:
+                        html = resp.text
+                        variant_match = re.search(r'"id"\s*:\s*"gid://shopify/ProductVariant/(\d+)"', html)
+                        if not variant_match:
+                            variant_match = re.search(r'data-variant-id="(\d+)"', html)
+                        if variant_match:
+                            variant_id = variant_match.group(1)
+                            price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html)
+                            if price_match:
+                                price = float(price_match.group(1))
+                                if min_price <= price <= max_price:
+                                    product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html)
+                                    product_id = product_match.group(1) if product_match else ""
+                                    title_match = re.search(r'"title"\s*:\s*"([^"]+)"', html)
+                                    title = title_match.group(1) if title_match else "Product"
+                                    return title, product_id, "", variant_id, str(price)
     except:
         pass
     
@@ -206,7 +214,7 @@ async def find_cheapest_product(client: AsyncTLSClient, shop_url: str, min_price
                     price = float(v.get("price") or 0)
                 except (ValueError, TypeError):
                     continue
-                if price < min_price:
+                if price < min_price or price > max_price:
                     continue
                 if price < best_price:
                     best_price = price
@@ -217,7 +225,7 @@ async def find_cheapest_product(client: AsyncTLSClient, shop_url: str, min_price
                     price_str = v.get("price", "")
         page += 1
     if not product_title:
-        raise Exception(f"No available products above ${min_price:.2f} at {shop_url}")
+        raise Exception(f"No available products between ${min_price:.2f} and ${max_price:.2f} at {shop_url}")
     return product_title, product_id, product_handle, variant_id, price_str
 
 
