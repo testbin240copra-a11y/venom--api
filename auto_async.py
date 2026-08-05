@@ -184,7 +184,36 @@ async def find_cheapest_product(client: AsyncTLSClient, shop_url: str, min_price
     except:
         pass
     
-    # ===== 3. products.json (آخر حل) =====
+    # ===== 3. جرب تجيب من الصفحة الرئيسية =====
+    try:
+        resp = await client.get(shop_url)
+        if resp.status_code == 200:
+            html = resp.text
+            product_links = re.findall(r'href="([^"]*\/products\/[^"]+)"', html)
+            if product_links:
+                link = product_links[0]
+                if not link.startswith('http'):
+                    link = shop_url + link
+                
+                resp = await client.get(link)
+                if resp.status_code == 200:
+                    html = resp.text
+                    variant_match = re.search(r'"id"\s*:\s*"gid://shopify/ProductVariant/(\d+)"', html)
+                    if not variant_match:
+                        variant_match = re.search(r'data-variant-id="(\d+)"', html)
+                    if variant_match:
+                        variant_id = variant_match.group(1)
+                        price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html)
+                        price = price_match.group(1) if price_match else "0.00"
+                        product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html)
+                        product_id = product_match.group(1) if product_match else ""
+                        title_match = re.search(r'"title"\s*:\s*"([^"]+)"', html)
+                        title = title_match.group(1) if title_match else "Product"
+                        return title, product_id, "", variant_id, price
+    except:
+        pass
+    
+    # ===== 4. products.json (آخر حل) =====
     best_price = float('inf')
     product_title = product_id = variant_id = price_str = product_handle = ""
     page = 1
@@ -219,7 +248,6 @@ async def find_cheapest_product(client: AsyncTLSClient, shop_url: str, min_price
     if not product_title:
         raise Exception(f"No available products above ${min_price:.2f} at {shop_url}")
     return product_title, product_id, product_handle, variant_id, price_str
-
 
 _PAGE_HEADERS = {
     "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
