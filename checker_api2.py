@@ -1,4 +1,4 @@
-# checker_api2.py - مع إضافة max_price
+# checker_api2.py - مع إضافة receipt_url في الـ Response و dump.txt
 
 from __future__ import annotations
 
@@ -50,27 +50,22 @@ _stats = {
 }
 
 # ===== إخفاء جميع الـ Logs =====
-# إعادة توجيه stdout/stderr
 sys.stdout = open(os.devnull, 'w')
 sys.stderr = open(os.devnull, 'w')
 
-# تعطيل logging
 logging.basicConfig(level=logging.CRITICAL)
 for name in logging.root.manager.loggerDict:
     logging.getLogger(name).disabled = True
     logging.getLogger(name).handlers = []
 
-# تعطيل loggers الخاصة بـ uvicorn
 logging.getLogger("uvicorn").disabled = True
 logging.getLogger("uvicorn.access").disabled = True
 logging.getLogger("uvicorn.error").disabled = True
 
 def _render_live() -> None:
-    # لا تفعل شيئاً
     pass
 
 def _update_live(card: str = "", status: str = "", response: str = "") -> None:
-    # لا تفعل شيئاً
     pass
 
 def is_memory_exceeded() -> bool:
@@ -82,11 +77,12 @@ def is_memory_exceeded() -> bool:
     except Exception:
         return False
 
-def _save_dump(card: str, site: str, status: str, result: str, amount: str):
+# ===== تعديل دالة _save_dump لإضافة receipt_url =====
+def _save_dump(card: str, site: str, status: str, result: str, amount: str, receipt_url: str = ""):
     try:
         with open("dump.txt", "a", encoding="utf-8") as f:
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            line = f"[{timestamp}] {status.upper()} | {card} | {site} | {result} | ${amount}\n"
+            line = f"[{timestamp}] {status.upper()} | {card} | {site} | {result} | ${amount} | {receipt_url}\n"
             f.write(line)
             f.flush()
     except Exception:
@@ -94,7 +90,6 @@ def _save_dump(card: str, site: str, status: str, result: str, amount: str):
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    # لا تطبع أي شيء
     yield
 
 app = FastAPI(title="VeNoM", docs_url=None, redoc_url=None, lifespan=_lifespan)
@@ -109,7 +104,7 @@ async def check(
     cc:    Optional[str] = Query(None),
     site:  Optional[str] = Query(None),
     proxy: Optional[str] = Query(None),
-    max_price: Optional[float] = Query(20.0),  # ===== أقصى سعر 20 دولار =====
+    max_price: Optional[float] = Query(20.0),
 ):
     if is_memory_exceeded():
         return JSONResponse({"error": "Server is busy"}, status_code=503)
@@ -136,7 +131,6 @@ async def check(
     t0 = asyncio.get_event_loop().time()
 
     try:
-        # ===== تمرير max_price إلى checker_async =====
         result = await checker_async.check_card_async(cc, site, proxy or "", max_price)
     except Exception as e:
         async with stats_lock:
@@ -160,10 +154,12 @@ async def check(
         _stats["active"] -= 1
 
     if status in ("charged", "approved", "declined"):
-        _save_dump(cc, site, status, result.get("result", ""), result.get("amount", "0"))
+        # ===== تمرير receipt_url إلى _save_dump =====
+        _save_dump(cc, site, status, result.get("result", ""), result.get("amount", "0"), result.get("receipt_url", ""))
 
     bot_status = {"charged":"Charged","approved":"Approved","declined":"Declined"}.get(status,"SiteError")
 
+    # ===== إضافة receipt_url في الـ Response =====
     return JSONResponse({
         "Status":   bot_status,
         "Response": result.get("result", ""),
@@ -172,6 +168,7 @@ async def check(
         "Card":     cc,
         "site":     site,
         "elapsed":  elapsed,
+        "receipt_url": result.get("receipt_url", ""),  # <-- إضافة هذا السطر
     })
 
 if __name__ == "__main__":
@@ -184,6 +181,6 @@ if __name__ == "__main__":
         log_level="critical",
         backlog=4096,
         timeout_keep_alive=30,
-        workers=2,
+        workers=4,
         log_config=None,
     )
