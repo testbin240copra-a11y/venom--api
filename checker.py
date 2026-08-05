@@ -134,6 +134,48 @@ def site_count(site_range: str = "random") -> int:
     return len(_base_pool(site_range))
 
 
+# ──────────────────────── Shopify Response Words ─────────────────────────────
+
+_CHARGE_WORDS = (
+    "order_paid", "order_placed", "order_confirmed", "order_completed",
+)
+
+_APPROVED_EXACT = frozenset({"approved", "live", "success", "ccn live cvv", "live cvv"})
+_APPROVED_WORDS = (
+    "insufficient_funds", "insufficient funds",
+    "incorrect_zip", "incorrect zip",
+    "incorrect_cvc", "incorrect cvc",
+    "3ds_authentication", "3ds_required", "3d_required",
+    "3d_authentication", "3ds-auth", "3d-secure", "3d secure",
+    "3d_redirect", "3ds", "3d",
+    "authentication_required", "auth required",
+    "otp_required", "otp required", "otp",
+    "challenge required", "incorrect_number", "two factor",
+)
+
+_DECLINED_EXACT = frozenset({"declined", "dead", "0", "invalid", "failed"})
+_DECLINED_WORDS = (
+    "generic_decline", "generic decline",
+    "do_not_honor", "FRAUD",
+    "stolen_card", "lost_card", "pickup_card", "restricted_card",
+    "fraudulent", "fraud",
+    "expired_card", "expired",
+    "transaction_not_allowed",
+    "card_declined", "card declined",
+    "processor_declined",
+    "card_not_supported", "currency_not_supported",
+    "revocation_of_authorization", "no_action_taken",
+    "your card was declined",
+    "payment_intent_authentication_failure",
+    "Credit card brand is not supported: maestro",
+    "invalid_number",
+    "decision_rule_block", "generic_error",
+    "buyer_identity_presentment_currency_does_not_match",
+    "delivery_no_delivery_strategy_available",
+    "this order is prevented due to suspect of fraud",
+    "not_permitted",
+)
+
 # ── Gateway response normalization ─────────────────────────────────────────────
 
 _APPROVED_KEYWORDS = (
@@ -172,15 +214,36 @@ def normalize_result(status: str, result_str: str) -> tuple[str, str]:
     """Map gateway text to charged / approved / declined / error."""
     resp = (result_str or "").strip() or "UNKNOWN"
     up   = resp.upper()
+    lower = resp.lower()
 
-    if any(k in up for k in ("ORDER_PLACED", "SUCCESSFULRECEIPT", "PROCESSEDRECEIPT")):
+    # ===== أولاً: التحقق من CHARGED =====
+    if any(k in lower for k in _CHARGE_WORDS):
         return "charged", resp
-    if any(k in up for k in _APPROVED_KEYWORDS):
+    
+    # ===== ثانياً: التحقق من APPROVED =====
+    if resp.lower() in _APPROVED_EXACT:
+        return "approved", resp
+    if any(k in lower for k in _APPROVED_WORDS):
         return "approved", resp
 
-    if status == "declined" or any(k in up for k in _DECLINED_KEYWORDS):
+    # ===== ثالثاً: التحقق من DECLINED =====
+    if status == "declined" or resp.lower() in _DECLINED_EXACT:
         if not any(k in up for k in _INFRA_ERROR_KEYWORDS):
             return "declined", resp
+
+    # ===== رابعاً: التحقق من DECLINED بالكلمات =====
+    if any(k in lower for k in _DECLINED_WORDS):
+        if not any(k in up for k in _INFRA_ERROR_KEYWORDS):
+            return "declined", resp
+
+    # ===== خامساً: التحقق من ORDER_PLACED =====
+    if any(k in up for k in ("ORDER_PLACED", "SUCCESSFULRECEIPT", "PROCESSEDRECEIPT")):
+        return "charged", resp
+
+    # ===== سادساً: التحقق من الكلمات القديمة =====
+    if any(k in up for k in _APPROVED_KEYWORDS):
+        if not any(k in up for k in _DECLINED_KEYWORDS):
+            return "approved", resp
 
     if status in ("charged", "approved", "declined"):
         return status, resp
