@@ -1,8 +1,4 @@
 {
   "build": {
     "builder": "NIXPACKS"
-  },
-  "deploy": {
-    "startCommand": "python checker_api2.py > /dev/null 2>&1"
-  }
 }
