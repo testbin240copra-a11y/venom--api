@@ -853,6 +853,8 @@ async def send_submit_for_completion(client: AsyncTLSClient, shop_url: str, chec
 
 # auto_async.py - فقط الجزء المطلوب من run_checkout_for_card_async
 
+# auto_async.py - الجزء المطلوب تعديله
+
 async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url: str = "", max_price: float = 20.0) -> CheckResult:
     """
     تشغيل فحص البطاقة مع تحديد أقصى سعر للمنتج
@@ -881,11 +883,10 @@ async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url:
     
     try:
         try:
-            # ===== استخدام max_price في البحث =====
             title, product_id, product_handle, variant_id, price = await find_cheapest_product(
                 client, shop_url,
                 min_price=0.50,
-                max_price=max_price  # السعر الأقصى المطلوب
+                max_price=max_price
             )
             _ = title
         except Exception as e:
@@ -1087,10 +1088,19 @@ async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url:
                 if m:
                     receipt_type = m.group(1)
                 result.status_code = extract_receipt_status_code(poll_body, receipt_type)
+                
+                # ===== استخراج receipt_url =====
+                try:
+                    poll_json = json.loads(poll_body)
+                    receipt_obj = poll_json.get("data", {}).get("receipt", {})
+                    conf_url = receipt_obj.get("confirmationPage", {}).get("url", "")
+                    result.receipt_url = conf_url or checkout_url + "/thank_you"
+                except Exception:
+                    result.receipt_url = checkout_url + "/thank_you"
+                
                 if receipt_type in ("SuccessfulReceipt", "ProcessedReceipt"):
                     result.status = CheckStatus.CHARGED
                     result.status_code = "ORDER_PLACED"
-                    result.receipt_url = checkout_url + "/thank_you"
                     return result
                 if receipt_type == "ActionRequiredReceipt":
                     result.status = CheckStatus.APPROVED
