@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 import datetime
+import no_logs
 
 warnings.filterwarnings("ignore")
 
