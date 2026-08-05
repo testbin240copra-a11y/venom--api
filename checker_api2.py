@@ -1,4 +1,4 @@
-# checker_api2.py - نسخة محسنة للسرعة القصوى
+# checker_api2.py
 
 from __future__ import annotations
 
@@ -26,17 +26,20 @@ from fastapi.responses import JSONResponse
 
 import checker_async
 
-# ===== إعدادات السرعة =====
-CONCURRENT_PER_SITE = int(os.environ.get("CONCURRENT_PER_SITE", "5"))
-POLL_ATTEMPTS = int(os.environ.get("POLL_ATTEMPTS", "8"))
-POLL_DELAY_MS = int(os.environ.get("POLL_DELAY_MS", "80"))
+# ===== إعدادات متوازنة =====
+CONCURRENT_PER_SITE = int(os.environ.get("CONCURRENT_PER_SITE", "2"))
+POLL_ATTEMPTS = int(os.environ.get("POLL_ATTEMPTS", "12"))
+POLL_DELAY_MS = int(os.environ.get("POLL_DELAY_MS", "300"))
+REQUEST_DELAY = float(os.environ.get("REQUEST_DELAY", "5.0"))
+MAX_PRODUCT_PRICE = float(os.environ.get("MAX_PRODUCT_PRICE", "25.0"))
 
-# تحديث إعدادات checker_async
+# تحديث الإعدادات
 checker_async.CONCURRENT_PER_SITE = CONCURRENT_PER_SITE
 auto_async.POLL_ATTEMPTS = POLL_ATTEMPTS
 auto_async.POLL_DELAY_MS = POLL_DELAY_MS
+auto_async.REQUEST_DELAY = REQUEST_DELAY
+auto_async.MAX_PRODUCT_PRICE = MAX_PRODUCT_PRICE
 
-# ===== إخفاء الـ logs =====
 sys.stdout = open(os.devnull, 'w')
 sys.stderr = open(os.devnull, 'w')
 
@@ -90,7 +93,7 @@ async def check(
     cc:    Optional[str] = Query(None),
     site:  Optional[str] = Query(None),
     proxy: Optional[str] = Query(None),
-    max_price: Optional[float] = Query(20.0),
+    max_price: Optional[float] = Query(25.0),
 ):
     if request.method == "POST":
         try:
@@ -114,7 +117,7 @@ async def check(
     t0 = asyncio.get_event_loop().time()
 
     try:
-        result = await checker_async.check_card_async(cc, site, proxy or "", max_price)
+        result = await checker_async.check_card_async(cc, site, proxy or "", max_price or MAX_PRODUCT_PRICE)
     except Exception as e:
         async with _stats_lock:
             _stats["errors"] += 1
@@ -159,9 +162,9 @@ if __name__ == "__main__":
         loop="uvloop",
         access_log=False,
         log_level="critical",
-        backlog=8192,
-        timeout_keep_alive=15,
-        workers=4,
-        limit_concurrency=200,
+        backlog=4096,
+        timeout_keep_alive=30,
+        workers=2,
+        limit_concurrency=50,
         log_config=None,
     )
