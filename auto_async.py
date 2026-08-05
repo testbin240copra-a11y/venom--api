@@ -123,23 +123,79 @@ def _is_cf_body(body: str) -> bool:
     return "1003" in body or "cloudflare" in lo or "cf_managed_challenge" in lo or "challenge" in lo
 
 async def find_cheapest_product(client: AsyncTLSClient, shop_url: str, min_price: float = 0.50):
+    """
+    تدور على منتج رخيص في الموقع من غير ما تجيب 429 (النسخة Async)
+    """
+    # ===== 1. جرب تجيب من /collections/all =====
+    try:
+        resp = await client.get(f"{shop_url}/collections/all")
+        if resp.status_code == 200:
+            html = resp.text
+            product_links = re.findall(r'href="([^"]*\/products\/[^"]+)"', html)
+            if product_links:
+                link = product_links[0]
+                if not link.startswith('http'):
+                    link = shop_url + link
+                
+                resp = await client.get(link)
+                if resp.status_code == 200:
+                    html = resp.text
+                    variant_match = re.search(r'"id"\s*:\s*"gid://shopify/ProductVariant/(\d+)"', html)
+                    if not variant_match:
+                        variant_match = re.search(r'data-variant-id="(\d+)"', html)
+                    if variant_match:
+                        variant_id = variant_match.group(1)
+                        price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html)
+                        price = price_match.group(1) if price_match else "0.00"
+                        product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html)
+                        product_id = product_match.group(1) if product_match else ""
+                        title_match = re.search(r'"title"\s*:\s*"([^"]+)"', html)
+                        title = title_match.group(1) if title_match else "Product"
+                        return title, product_id, "", variant_id, price
+    except:
+        pass
+    
+    # ===== 2. جرب تجيب من /search =====
+    try:
+        resp = await client.get(f"{shop_url}/search?q=*")
+        if resp.status_code == 200:
+            html = resp.text
+            product_links = re.findall(r'href="([^"]*\/products\/[^"]+)"', html)
+            if product_links:
+                link = product_links[0]
+                if not link.startswith('http'):
+                    link = shop_url + link
+                
+                resp = await client.get(link)
+                if resp.status_code == 200:
+                    html = resp.text
+                    variant_match = re.search(r'"id"\s*:\s*"gid://shopify/ProductVariant/(\d+)"', html)
+                    if not variant_match:
+                        variant_match = re.search(r'data-variant-id="(\d+)"', html)
+                    if variant_match:
+                        variant_id = variant_match.group(1)
+                        price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html)
+                        price = price_match.group(1) if price_match else "0.00"
+                        product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html)
+                        product_id = product_match.group(1) if product_match else ""
+                        title_match = re.search(r'"title"\s*:\s*"([^"]+)"', html)
+                        title = title_match.group(1) if title_match else "Product"
+                        return title, product_id, "", variant_id, price
+    except:
+        pass
+    
+    # ===== 3. products.json (آخر حل) =====
     best_price = float('inf')
     product_title = product_id = variant_id = price_str = product_handle = ""
     page = 1
     while page <= MAX_PRODUCT_PAGES:
-        resp = await client.get(f"{shop_url}/products.json?limit=250&page={page}")
+        resp = await client.get(f"{shop_url}/products.json?limit=10&page={page}")
         if resp.status_code != 200:
-            body = resp.text[:500]
-            if _is_cf_body(body):
-                raise Exception("returned 1003 cloudflare")
-            raise Exception(f"GET products.json page {page} returned {resp.status_code}")
+            break
         try:
             products = resp.json().get("products", [])
         except Exception:
-            body = resp.text[:300]
-            if _is_cf_body(body):
-                raise Exception("returned 1003 cloudflare")
-            raise Exception("products.json returned non-json")
+            break
         if not products:
             break
         for p in products:
@@ -163,6 +219,7 @@ async def find_cheapest_product(client: AsyncTLSClient, shop_url: str, min_price
     if not product_title:
         raise Exception(f"No available products above ${min_price:.2f} at {shop_url}")
     return product_title, product_id, product_handle, variant_id, price_str
+
 
 _PAGE_HEADERS = {
     "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
