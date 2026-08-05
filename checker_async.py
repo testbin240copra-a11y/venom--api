@@ -1,4 +1,4 @@
-# checker_async.py - مع إضافة max_price
+# checker_async.py - مع إضافة receipt_url في النتيجة
 
 """
 Async card checker — wraps auto_async.run_checkout_for_card_async.
@@ -25,7 +25,7 @@ _site_sems_lock = asyncio.Lock()
 async def _get_site_sem(site: str) -> asyncio.Semaphore:
     async with _site_sems_lock:
         if site not in _site_sems:
-            _site_sems[site] = asyncio.Semaphore(1)  # طلب واحد في نفس الوقت
+            _site_sems[site] = asyncio.Semaphore(1)
         return _site_sems[site]
 
 async def check_card_async(cc: str, site: str, proxy: str, max_price: float = 20.0) -> dict:
@@ -38,7 +38,6 @@ async def check_card_async(cc: str, site: str, proxy: str, max_price: float = 20
         proxy: البروكسي
         max_price: أقصى سعر للمنتج (افتراضي 20 دولار)
     """
-    # لو الموقع ميت خذ بديل تلقائياً
     if checker._is_dead(site):
         alt = checker.get_random_site()
         if alt and alt != site:
@@ -53,7 +52,6 @@ async def check_card_async(cc: str, site: str, proxy: str, max_price: float = 20
     site_sem = await _get_site_sem(site)
     async with site_sem:
         try:
-            # ===== تمرير max_price إلى auto_async =====
             res = await auto_async.run_checkout_for_card_async(site, cc, proxy_url, max_price)
         except Exception as e:
             err_msg = str(e).replace("\n", " ")[:150]
@@ -82,6 +80,6 @@ async def check_card_async(cc: str, site: str, proxy: str, max_price: float = 20
         "result":      result_str,
         "amount":      res.amount or "0",
         "site":        site,
-        "receipt_url": res.receipt_url or "",
+        "receipt_url": res.receipt_url or "",  # <-- إضافة receipt_url
         "card":        cc,
     }
