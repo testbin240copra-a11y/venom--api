@@ -1,4 +1,4 @@
-# auto_async.py - كامل مع تعديلات السرعة والسعر من 0.50 إلى 20
+# auto_async.py - كامل مع تعديلات السرعة
 
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ check_submit_errors = _auto.check_submit_errors
 generate_attempt_token = _auto.generate_attempt_token
 generate_page_id = _auto.generate_page_id
 
-# ===== تعديلات السرعة والسعر =====
+# ===== تعديلات السرعة =====
 MAX_PRODUCT_PAGES = 2  # كان 5
 MAX_PRODUCT_PRICE = 20.0  # أقصى سعر 20 دولار
 MIN_PRODUCT_PRICE = 0.50  # أقل سعر 0.50 دولار
@@ -341,9 +341,7 @@ async def send_pci_session(ident_sig: str, card_number: str, card_name: str, car
         resp = await session.post("https://checkout.pci.shopifyinc.com/sessions", data=payload, headers=headers, timeout=15)
     return resp.status_code, resp.text
 
-# ===== باقي الدوال (send_proposal, send_proposal2, send_proposal3, send_poll_for_receipt, send_submit_for_completion) =====
-# ===== يتم استيرادها من auto.py =====
-
+# ===== استيراد الدوال من auto.py =====
 send_proposal = _auto.send_proposal
 send_proposal2 = _auto.send_proposal2
 send_proposal3 = _auto.send_proposal3
@@ -468,7 +466,6 @@ async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url:
 
         # ===== تقليل عدد Proposals =====
         try:
-            # استخدم proposal3 مباشرة
             signed_handles = extract_signed_handles(proposal3_body)
             if not signed_handles:
                 await asyncio.sleep(0.02)
@@ -528,7 +525,7 @@ async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url:
             current_tax = extract_tax_amount(final_proposal_body)
             current_total = total_amount
 
-            # ===== Tax Retries =====
+            # ===== Tax Retries (محاولة واحدة فقط) =====
             for tax_attempt in range(1, 2):
                 submit_status, submit_body = await send_submit_for_completion(
                     client, shop_url, checkout_url, checkout_token, session_token,
