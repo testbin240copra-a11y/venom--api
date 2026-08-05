@@ -1,4 +1,4 @@
-# checker_async.py - مع إضافة receipt_url في النتيجة
+# checker_async.py - مع إضافة receipt_url و timeout
 
 """
 Async card checker — wraps auto_async.run_checkout_for_card_async.
@@ -52,7 +52,20 @@ async def check_card_async(cc: str, site: str, proxy: str, max_price: float = 20
     site_sem = await _get_site_sem(site)
     async with site_sem:
         try:
-            res = await auto_async.run_checkout_for_card_async(site, cc, proxy_url, max_price)
+            # ===== إضافة timeout =====
+            res = await asyncio.wait_for(
+                auto_async.run_checkout_for_card_async(site, cc, proxy_url, max_price),
+                timeout=25
+            )
+        except asyncio.TimeoutError:
+            return {
+                "status": "error",
+                "result": "Timeout after 25s",
+                "amount": "0",
+                "site": site,
+                "receipt_url": "",
+                "card": cc,
+            }
         except Exception as e:
             err_msg = str(e).replace("\n", " ")[:150]
             checker._mark_dead(site, err_msg)
@@ -80,6 +93,6 @@ async def check_card_async(cc: str, site: str, proxy: str, max_price: float = 20
         "result":      result_str,
         "amount":      res.amount or "0",
         "site":        site,
-        "receipt_url": res.receipt_url or "",  # <-- إضافة receipt_url
+        "receipt_url": res.receipt_url or "",
         "card":        cc,
     }
