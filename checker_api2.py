@@ -1,4 +1,4 @@
-# checker_api2.py - بدون Display
+# checker_api2.py - مع إضافة max_price
 
 from __future__ import annotations
 
@@ -109,6 +109,7 @@ async def check(
     cc:    Optional[str] = Query(None),
     site:  Optional[str] = Query(None),
     proxy: Optional[str] = Query(None),
+    max_price: Optional[float] = Query(20.0),  # ===== أقصى سعر 20 دولار =====
 ):
     if is_memory_exceeded():
         return JSONResponse({"error": "Server is busy"}, status_code=503)
@@ -119,6 +120,7 @@ async def check(
             cc    = body.get("cc",    cc)
             site  = body.get("site",  site)
             proxy = body.get("proxy", proxy)
+            max_price = body.get("max_price", max_price)
         except Exception:
             pass
 
@@ -134,7 +136,8 @@ async def check(
     t0 = asyncio.get_event_loop().time()
 
     try:
-        result = await checker_async.check_card_async(cc, site, proxy or "")
+        # ===== تمرير max_price إلى checker_async =====
+        result = await checker_async.check_card_async(cc, site, proxy or "", max_price)
     except Exception as e:
         async with stats_lock:
             _stats["errors"] += 1
