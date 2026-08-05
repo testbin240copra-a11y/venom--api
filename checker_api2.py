@@ -1,4 +1,4 @@
-# checker_api2.py - مع إضافة receipt_url و timeout
+# checker_api2.py
 
 from __future__ import annotations
 
@@ -49,7 +49,6 @@ _stats = {
     "started":  time.strftime("%Y-%m-%d %H:%M:%S"),
 }
 
-# ===== إخفاء جميع الـ Logs =====
 sys.stdout = open(os.devnull, 'w')
 sys.stderr = open(os.devnull, 'w')
 
@@ -61,12 +60,6 @@ for name in logging.root.manager.loggerDict:
 logging.getLogger("uvicorn").disabled = True
 logging.getLogger("uvicorn.access").disabled = True
 logging.getLogger("uvicorn.error").disabled = True
-
-def _render_live() -> None:
-    pass
-
-def _update_live(card: str = "", status: str = "", response: str = "") -> None:
-    pass
 
 def is_memory_exceeded() -> bool:
     if not MEMORY_CHECK_ENABLED or psutil is None:
@@ -130,10 +123,9 @@ async def check(
     t0 = asyncio.get_event_loop().time()
 
     try:
-        # ===== إضافة timeout =====
         result = await asyncio.wait_for(
             checker_async.check_card_async(cc, site, proxy or "", max_price),
-            timeout=30
+            timeout=25
         )
     except asyncio.TimeoutError:
         async with stats_lock:
@@ -141,7 +133,7 @@ async def check(
             _stats["active"] -= 1
         return JSONResponse({
             "Status": "SiteError",
-            "Response": "Request timeout after 30s",
+            "Response": "Request timeout after 25s",
             "Price": "-",
             "Gateway": "VeNoM",
             "Card": cc,
