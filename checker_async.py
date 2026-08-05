@@ -1,3 +1,5 @@
+# checker_async.py - مع إضافة max_price
+
 """
 Async card checker — wraps auto_async.run_checkout_for_card_async.
 Reuses checker.py's site cache (_sites, _alive_sites, _mark_dead, etc.)
@@ -26,7 +28,16 @@ async def _get_site_sem(site: str) -> asyncio.Semaphore:
             _site_sems[site] = asyncio.Semaphore(1)  # طلب واحد في نفس الوقت
         return _site_sems[site]
 
-async def check_card_async(cc: str, site: str, proxy: str) -> dict:
+async def check_card_async(cc: str, site: str, proxy: str, max_price: float = 20.0) -> dict:
+    """
+    فحص البطاقة مع تحديد أقصى سعر للمنتج
+    
+    Args:
+        cc: البطاقة بصيغة رقم|شهر|سنة|CVV
+        site: رابط المتجر
+        proxy: البروكسي
+        max_price: أقصى سعر للمنتج (افتراضي 20 دولار)
+    """
     # لو الموقع ميت خذ بديل تلقائياً
     if checker._is_dead(site):
         alt = checker.get_random_site()
@@ -42,7 +53,8 @@ async def check_card_async(cc: str, site: str, proxy: str) -> dict:
     site_sem = await _get_site_sem(site)
     async with site_sem:
         try:
-            res = await auto_async.run_checkout_for_card_async(site, cc, proxy_url)
+            # ===== تمرير max_price إلى auto_async =====
+            res = await auto_async.run_checkout_for_card_async(site, cc, proxy_url, max_price)
         except Exception as e:
             err_msg = str(e).replace("\n", " ")[:150]
             checker._mark_dead(site, err_msg)
