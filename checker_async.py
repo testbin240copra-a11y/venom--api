@@ -1,9 +1,4 @@
-# checker_async.py - مع إضافة receipt_url و timeout
-
-"""
-Async card checker — wraps auto_async.run_checkout_for_card_async.
-Reuses checker.py's site cache (_sites, _alive_sites, _mark_dead, etc.)
-"""
+# checker_async.py
 
 import asyncio
 
@@ -14,11 +9,9 @@ import os
 import sys
 import logging
 
-# إخفاء الـ logs
 sys.stderr = open(os.devnull, 'w')
 logging.getLogger().setLevel(logging.CRITICAL)
 
-# Per-site semaphore — max 1 concurrent request per site to avoid 429
 _site_sems: dict[str, asyncio.Semaphore] = {}
 _site_sems_lock = asyncio.Lock()
 
@@ -29,15 +22,6 @@ async def _get_site_sem(site: str) -> asyncio.Semaphore:
         return _site_sems[site]
 
 async def check_card_async(cc: str, site: str, proxy: str, max_price: float = 20.0) -> dict:
-    """
-    فحص البطاقة مع تحديد أقصى سعر للمنتج
-    
-    Args:
-        cc: البطاقة بصيغة رقم|شهر|سنة|CVV
-        site: رابط المتجر
-        proxy: البروكسي
-        max_price: أقصى سعر للمنتج (افتراضي 20 دولار)
-    """
     if checker._is_dead(site):
         alt = checker.get_random_site()
         if alt and alt != site:
@@ -52,15 +36,14 @@ async def check_card_async(cc: str, site: str, proxy: str, max_price: float = 20
     site_sem = await _get_site_sem(site)
     async with site_sem:
         try:
-            # ===== إضافة timeout =====
             res = await asyncio.wait_for(
                 auto_async.run_checkout_for_card_async(site, cc, proxy_url, max_price),
-                timeout=25
+                timeout=20
             )
         except asyncio.TimeoutError:
             return {
                 "status": "error",
-                "result": "Timeout after 25s",
+                "result": "Timeout after 20s",
                 "amount": "0",
                 "site": site,
                 "receipt_url": "",
