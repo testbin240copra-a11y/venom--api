@@ -1,4 +1,4 @@
-# auto_async.py - النسخة الكاملة المعدلة للتناسق مع auto.py
+# auto_async.py - نسخة مطورة للسرعة
 
 from __future__ import annotations
 
@@ -8,8 +8,6 @@ import re
 import html
 import random
 import urllib.parse
-import time as _time_mod
-import os
 
 from curl_cffi.requests import AsyncSession
 
@@ -67,9 +65,9 @@ check_submit_errors = _auto.check_submit_errors
 generate_attempt_token = _auto.generate_attempt_token
 generate_page_id = _auto.generate_page_id
 
-# ===== إعدادات الأسعار =====
+MAX_PRODUCT_PAGES = 3
+MAX_PRODUCT_PRICE = 20.0
 MIN_PRODUCT_PRICE = 0.50
-MAX_PRODUCT_PRICE = 30.0
 
 class AsyncTLSClient:
     def __init__(self, timeout=5, proxy_url=None, impersonate=None, user_agent=None):
@@ -128,15 +126,148 @@ def _is_cf_body(body: str) -> bool:
     lo = body.lower()
     return "1003" in body or "cloudflare" in lo or "cf_managed_challenge" in lo or "challenge" in lo
 
-# ===== البحث عن المنتج باستخدام auto.py =====
-async def find_cheapest_product_async(client: AsyncTLSClient, shop_url: str, min_price: float = MIN_PRODUCT_PRICE, max_price: float = MAX_PRODUCT_PRICE):
-    from auto import find_cheapest_product as sync_find
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: sync_find(client, shop_url, min_price, max_price)
-    )
-    return result
+async def find_cheapest_product(client: AsyncTLSClient, shop_url: str, min_price: float = MIN_PRODUCT_PRICE, max_price: float = MAX_PRODUCT_PRICE):
+    # البحث في collections/all
+    try:
+        resp = await client.get(f"{shop_url}/collections/all")
+        if resp.status_code == 200:
+            html_content = resp.text
+            product_links = re.findall(r'href="([^"]*\/products\/[^"]+)"', html_content)
+            if product_links:
+                for link in product_links[:2]:
+                    if not link.startswith('http'):
+                        link = shop_url + link
+                    
+                    resp = await client.get(link)
+                    if resp.status_code == 200:
+                        html_content = resp.text
+                        variant_match = re.search(r'"id"\s*:\s*"gid://shopify/ProductVariant/(\d+)"', html_content)
+                        if not variant_match:
+                            variant_match = re.search(r'data-variant-id="(\d+)"', html_content)
+                        if variant_match:
+                            variant_id = variant_match.group(1)
+                            price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html_content)
+                            if price_match:
+                                price = float(price_match.group(1))
+                                if min_price <= price <= max_price:
+                                    product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html_content)
+                                    product_id = product_match.group(1) if product_match else ""
+                                    title_match = re.search(r'"title"\s*:\s*"([^"]+)"', html_content)
+                                    title = title_match.group(1) if title_match else "Product"
+                                    return title, product_id, "", variant_id, str(price)
+    except:
+        pass
+    
+    # البحث في search
+    try:
+        resp = await client.get(f"{shop_url}/search?q=*")
+        if resp.status_code == 200:
+            html_content = resp.text
+            product_links = re.findall(r'href="([^"]*\/products\/[^"]+)"', html_content)
+            if product_links:
+                for link in product_links[:2]:
+                    if not link.startswith('http'):
+                        link = shop_url + link
+                    
+                    resp = await client.get(link)
+                    if resp.status_code == 200:
+                        html_content = resp.text
+                        variant_match = re.search(r'"id"\s*:\s*"gid://shopify/ProductVariant/(\d+)"', html_content)
+                        if not variant_match:
+                            variant_match = re.search(r'data-variant-id="(\d+)"', html_content)
+                        if variant_match:
+                            variant_id = variant_match.group(1)
+                            price_match = re.search(r'"price"\s*:\s*"([0-9.]+)"', html_content)
+                            if price_match:
+                                price = float(price_match.group(1))
+                                if min_price <= price <= max_price:
+                                    product_match = re.search(r'"id"\s*:\s*"gid://shopify/Product/(\d+)"', html_content)
+                                    product_id = product_match.group(1) if product_match else ""
+                                    title_match = re.search(r'"title"\s*:\s*"([^"]+)"', html_content)
+                                    title = title_match.group(1) if title_match else "Product"
+                                    return title, product_id, "", variant_id, str(price)
+    except:
+        pass
+    
+    # البحث في products.json
+    best_price = float('inf')
+    product_title = product_id = variant_id = price_str = product_handle = ""
+    
+    for page in range(1, MAX_PRODUCT_PAGES + 1):
+        try:
+            resp = await client.get(f"{shop_url}/products.json?limit=5&page={page}")
+            if resp.status_code != 200:
+                continue
+            try:
+                products = resp.json().get("products", [])
+            except Exception:
+                continue
+            if not products:
+                break
+            for p in products:
+                for v in p.get("variants", []):
+                    if not v.get("available", False):
+                        continue
+                    try:
+                        price = float(v.get("price") or 0)
+                    except (ValueError, TypeError):
+                        continue
+                    if min_price <= price <= max_price:
+                        if price < best_price:
+                            best_price = price
+                            product_title = p.get("title", "")
+                            product_id = str(p.get("id", ""))
+                            product_handle = p.get("handle", "")
+                            variant_id = str(v.get("id", ""))
+                            price_str = v.get("price", "")
+            if product_title and best_price <= max_price:
+                return product_title, product_id, product_handle, variant_id, price_str
+        except Exception:
+            continue
+    
+    # إذا لم نجد منتجاً بالسعر المطلوب، نبحث عن أرخص سلعة
+    return await _find_cheapest_product_any_price(client, shop_url)
+
+async def _find_cheapest_product_any_price(client: AsyncTLSClient, shop_url: str):
+    """تجد أرخص سلعة في الموقع بغض النظر عن السعر"""
+    cheapest_price = float('inf')
+    cheapest_title = ""
+    cheapest_product_id = ""
+    cheapest_variant_id = ""
+    cheapest_price_str = ""
+    
+    for page in range(1, MAX_PRODUCT_PAGES + 1):
+        try:
+            resp = await client.get(f"{shop_url}/products.json?limit=5&page={page}")
+            if resp.status_code != 200:
+                continue
+            try:
+                products = resp.json().get("products", [])
+            except Exception:
+                continue
+            if not products:
+                break
+            for p in products:
+                for v in p.get("variants", []):
+                    if not v.get("available", False):
+                        continue
+                    try:
+                        price = float(v.get("price") or 0)
+                    except (ValueError, TypeError):
+                        continue
+                    if price < cheapest_price:
+                        cheapest_price = price
+                        cheapest_title = p.get("title", "Product")
+                        cheapest_product_id = str(p.get("id", ""))
+                        cheapest_variant_id = str(v.get("id", ""))
+                        cheapest_price_str = v.get("price", "0")
+        except Exception:
+            continue
+    
+    if not cheapest_title:
+        raise Exception(f"No available products found at {shop_url}")
+    
+    return cheapest_title, cheapest_product_id, "", cheapest_variant_id, cheapest_price_str
 
 _PAGE_HEADERS = {
     "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -153,7 +284,7 @@ _PAGE_HEADERS = {
     "upgrade-insecure-requests": "1",
 }
 
-async def add_to_cart_and_checkout_async(client: AsyncTLSClient, shop_url: str, variant_id: str, product_id: str, product_handle: str):
+async def add_to_cart_and_checkout(client: AsyncTLSClient, shop_url: str, variant_id: str, product_id: str, product_handle: str):
     cart_permalink = f"{shop_url}/cart/{variant_id}:1"
     checkout_resp = await client.get(cart_permalink, allow_redirects=True, headers={
         **_PAGE_HEADERS,
@@ -171,7 +302,7 @@ async def add_to_cart_and_checkout_async(client: AsyncTLSClient, shop_url: str, 
     session_token = html.unescape(session_match.group(1)).strip('"') if session_match else ""
     return checkout_url, checkout_token, session_token, checkout_html
 
-async def fetch_private_access_token_async(client: AsyncTLSClient, shop_url: str, checkout_url: str, pat_id: str) -> str:
+async def fetch_private_access_token(client: AsyncTLSClient, shop_url: str, checkout_url: str, pat_id: str) -> str:
     req_url = f"{shop_url}/private_access_tokens?id={urllib.parse.quote(pat_id)}&checkout_type=c1"
     headers = {
         "accept": "*/*",
@@ -188,7 +319,7 @@ async def fetch_private_access_token_async(client: AsyncTLSClient, shop_url: str
     resp = await client.get(req_url, headers=headers)
     return f"[{resp.status_code}] {resp.text}"
 
-async def fetch_actions_js_async(client: AsyncTLSClient, actions_url: str, shop_url: str) -> str:
+async def fetch_actions_js(client: AsyncTLSClient, actions_url: str, shop_url: str) -> str:
     headers = {
         "accept": "*/*",
         "accept-language": "en-US,en;q=0.9",
@@ -207,18 +338,560 @@ async def fetch_actions_js_async(client: AsyncTLSClient, actions_url: str, shop_
         raise Exception(f"GET actions JS returned {resp.status_code}")
     return resp.text
 
-# ===== استيراد الدوال من auto.py =====
-from auto import (
-    send_proposal,
-    send_proposal2,
-    send_proposal3,
-    send_poll_for_receipt,
-    send_submit_for_completion,
-    send_pci_session,
-)
+async def send_pci_session(ident_sig: str, card_number: str, card_name: str, card_month: int, card_year: int, cvv: str, shop_domain: str, proxy_url: str = ""):
+    payload = json.dumps({
+        "credit_card": {
+            "number": card_number,
+            "month": card_month,
+            "year": card_year,
+            "verification_value": cvv,
+            "start_month": None,
+            "start_year": None,
+            "issue_number": "",
+            "name": card_name,
+        },
+        "payment_session_scope": shop_domain,
+    })
+    headers = {
+        "accept": "application/json",
+        "accept-language": "en-US,en;q=0.9",
+        "content-type": "application/json",
+        "origin": "https://checkout.pci.shopifyinc.com",
+        "priority": "u=1, i",
+        "referer": "https://checkout.pci.shopifyinc.com/build/a8e4a94/number-ltr.html?identifier=&locationURL=",
+        "sec-ch-ua": '"Chromium";v="146", "Not-A.Brand";v="24", "Microsoft Edge";v="146"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+        "sec-fetch-storage-access": "active",
+        "shopify-identification-signature": ident_sig,
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36 Edg/146.0.0.0",
+    }
+    async with AsyncSession(impersonate="chrome124", timeout=5) as session:
+        if proxy_url:
+            session.proxies = {"http": proxy_url, "https": proxy_url}
+        resp = await session.post("https://checkout.pci.shopifyinc.com/sessions", data=payload, headers=headers, timeout=5)
+    return resp.status_code, resp.text
 
-# ===== الدالة الرئيسية =====
-async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url: str = "", max_price: float = 30.0) -> CheckResult:
+async def send_proposal(client: AsyncTLSClient, shop_url: str, checkout_url: str, checkout_token: str, session_token: str, stable_id: str, variant_id: str, price: str, proposal_id: str, build_id: str, source_token: str, currency: str, country: str):
+    gql_payload = f'''{{
+  "variables": {{
+    "sessionInput": {{"sessionToken": "{session_token}"}},
+    "queueToken": null,
+    "discounts": {{"lines": [], "acceptUnexpectedDiscounts": true}},
+    "delivery": {{
+      "deliveryLines": [{{
+        "destination": {{
+          "partialStreetAddress": {{
+            "address1": "", "city": "", "countryCode": "US",
+            "lastName": "", "phone": "", "oneTimeUse": false
+          }}
+        }},
+        "selectedDeliveryStrategy": {{
+          "deliveryStrategyMatchingConditions": {{
+            "estimatedTimeInTransit": {{"any": true}},
+            "shipments": {{"any": true}}
+          }},
+          "options": {{}}
+        }},
+        "targetMerchandiseLines": {{"any": true}},
+        "deliveryMethodTypes": ["SHIPPING"],
+        "expectedTotalPrice": {{"any": true}},
+        "destinationChanged": true
+      }}],
+      "noDeliveryRequired": [],
+      "useProgressiveRates": false,
+      "prefetchShippingRatesStrategy": null,
+      "supportsSplitShipping": true
+    }},
+    "deliveryExpectations": {{"deliveryExpectationLines": []}},
+    "merchandise": {{
+      "merchandiseLines": [{{
+        "stableId": "{stable_id}",
+        "merchandise": {{
+          "productVariantReference": {{
+            "id": "gid://shopify/ProductVariantMerchandise/{variant_id}",
+            "variantId": "gid://shopify/ProductVariant/{variant_id}",
+            "properties": [], "sellingPlanId": null, "sellingPlanDigest": null
+          }}
+        }},
+        "quantity": {{"items": {{"value": 1}}}},
+        "expectedTotalPrice": {{"any": true}},
+        "lineComponentsSource": null, "lineComponents": []
+      }}]
+    }},
+    "memberships": {{"memberships": []}},
+    "payment": {{
+      "totalAmount": {{"any": true}},
+      "paymentLines": [],
+      "billingAddress": {{
+        "streetAddress": {{"address1": "", "city": "", "countryCode": "US", "lastName": "", "phone": ""}}
+      }}
+    }},
+    "buyerIdentity": {{
+      "customer": {{"presentmentCurrency": "USD", "countryCode": "US"}},
+      "phoneCountryCode": "US",
+      "marketingConsent": [],
+      "shopPayOptInPhone": {{"countryCode": "US"}},
+      "rememberMe": false
+    }},
+    "tip": {{"tipLines": []}},
+    "poNumber": null,
+    "taxes": {{
+      "proposedAllocations": null,
+      "proposedTotalAmount": {{"any": true}},
+      "proposedTotalIncludedAmount": null,
+      "proposedMixedStateTotalAmount": null,
+      "proposedExemptions": []
+    }},
+    "note": {{"message": null, "customAttributes": []}},
+    "localizationExtension": {{"fields": []}},
+    "nonNegotiableTerms": null,
+    "scriptFingerprint": {{
+      "signature": null, "signatureUuid": null,
+      "lineItemScriptChanges": [], "paymentScriptChanges": [], "shippingScriptChanges": []
+    }},
+    "optionalDuties": {{"buyerRefusesDuties": false}},
+    "cartMetafields": []
+  }},
+  "operationName": "Proposal",
+  "id": "{proposal_id}"
+}}'''
+    gql_payload = patch_payload(gql_payload, currency, country)
+    resp = await client.post(
+        f"{shop_url}/checkouts/internal/graphql/persisted?operationName=Proposal",
+        data=gql_payload,
+        headers=_proposal_headers(shop_url, checkout_url, checkout_token, session_token, build_id, source_token),
+    )
+    if resp.status_code == 429:
+        raise Exception("returned 429")
+    if resp.status_code >= 500:
+        raise Exception(f"returned {resp.status_code}")
+    return resp.status_code, resp.text
+
+async def send_proposal2(client: AsyncTLSClient, shop_url: str, checkout_url: str, checkout_token: str, session_token: str, stable_id: str, variant_id: str, price: str, proposal_id: str, build_id: str, source_token: str, queue_token: str, email: str, currency: str, country: str):
+    gql_payload = f'''{{
+  "variables": {{
+    "sessionInput": {{"sessionToken": "{session_token}"}},
+    "queueToken": "{queue_token}",
+    "discounts": {{"lines": [], "acceptUnexpectedDiscounts": true}},
+    "delivery": {{
+      "deliveryLines": [{{
+        "destination": {{
+          "partialStreetAddress": {{
+            "address1": "", "city": "", "countryCode": "US",
+            "lastName": "", "phone": "", "oneTimeUse": false
+          }}
+        }},
+        "selectedDeliveryStrategy": {{
+          "deliveryStrategyMatchingConditions": {{
+            "estimatedTimeInTransit": {{"any": true}},
+            "shipments": {{"any": true}}
+          }},
+          "options": {{}}
+        }},
+        "targetMerchandiseLines": {{"any": true}},
+        "deliveryMethodTypes": ["SHIPPING"],
+        "expectedTotalPrice": {{"any": true}},
+        "destinationChanged": true
+      }}],
+      "noDeliveryRequired": [],
+      "useProgressiveRates": false,
+      "prefetchShippingRatesStrategy": null,
+      "supportsSplitShipping": true
+    }},
+    "deliveryExpectations": {{"deliveryExpectationLines": []}},
+    "merchandise": {{
+      "merchandiseLines": [{{
+        "stableId": "{stable_id}",
+        "merchandise": {{
+          "productVariantReference": {{
+            "id": "gid://shopify/ProductVariantMerchandise/{variant_id}",
+            "variantId": "gid://shopify/ProductVariant/{variant_id}",
+            "properties": [], "sellingPlanId": null, "sellingPlanDigest": null
+          }}
+        }},
+        "quantity": {{"items": {{"value": 1}}}},
+        "expectedTotalPrice": {{"any": true}},
+        "lineComponentsSource": null, "lineComponents": []
+      }}]
+    }},
+    "memberships": {{"memberships": []}},
+    "payment": {{
+      "totalAmount": {{"any": true}},
+      "paymentLines": [],
+      "billingAddress": {{
+        "streetAddress": {{"address1": "", "city": "", "countryCode": "US", "lastName": "", "phone": ""}}
+      }}
+    }},
+    "buyerIdentity": {{
+      "customer": {{"presentmentCurrency": "USD", "countryCode": "US"}},
+      "email": "{email}",
+      "emailChanged": true,
+      "phoneCountryCode": "US",
+      "marketingConsent": [],
+      "shopPayOptInPhone": {{"countryCode": "US"}},
+      "rememberMe": false
+    }},
+    "tip": {{"tipLines": []}},
+    "poNumber": null,
+    "taxes": {{
+      "proposedAllocations": null,
+      "proposedTotalAmount": {{"any": true}},
+      "proposedTotalIncludedAmount": null,
+      "proposedMixedStateTotalAmount": null,
+      "proposedExemptions": []
+    }},
+    "note": {{"message": null, "customAttributes": []}},
+    "localizationExtension": {{"fields": []}},
+    "nonNegotiableTerms": null,
+    "scriptFingerprint": {{
+      "signature": null, "signatureUuid": null,
+      "lineItemScriptChanges": [], "paymentScriptChanges": [], "shippingScriptChanges": []
+    }},
+    "optionalDuties": {{"buyerRefusesDuties": false}},
+    "cartMetafields": []
+  }},
+  "operationName": "Proposal",
+  "id": "{proposal_id}"
+}}'''
+    gql_payload = patch_payload(gql_payload, currency, country)
+    resp = await client.post(
+        f"{shop_url}/checkouts/internal/graphql/persisted?operationName=Proposal",
+        data=gql_payload,
+        headers=_proposal_headers(shop_url, checkout_url, checkout_token, session_token, build_id, source_token),
+    )
+    if resp.status_code == 429:
+        raise Exception("returned 429")
+    if resp.status_code >= 500:
+        raise Exception(f"returned {resp.status_code}")
+    return resp.status_code, resp.text
+
+async def send_proposal3(client: AsyncTLSClient, shop_url: str, checkout_url: str, checkout_token: str, session_token: str, stable_id: str, variant_id: str, price: str, proposal_id: str, build_id: str, source_token: str, queue_token: str, email: str, addr: Address, currency: str, country: str):
+    gql_payload = f'''{{
+  "variables": {{
+    "sessionInput": {{"sessionToken": "{session_token}"}},
+    "queueToken": "{queue_token}",
+    "discounts": {{"lines": [], "acceptUnexpectedDiscounts": true}},
+    "delivery": {{
+      "deliveryLines": [{{
+        "destination": {{
+          "partialStreetAddress": {{
+            "address1": "{addr.address1}",
+            "address2": "{addr.address2}",
+            "city": "{addr.city}",
+            "countryCode": "{addr.country_code}",
+            "postalCode": "{addr.postal_code}",
+            "firstName": "{addr.first_name}",
+            "lastName": "{addr.last_name}",
+            "zoneCode": "{addr.zone_code}",
+            "phone": "{addr.phone}",
+            "oneTimeUse": false
+          }}
+        }},
+        "selectedDeliveryStrategy": {{
+          "deliveryStrategyMatchingConditions": {{
+            "estimatedTimeInTransit": {{"any": true}},
+            "shipments": {{"any": true}}
+          }},
+          "options": {{}}
+        }},
+        "targetMerchandiseLines": {{"any": true}},
+        "deliveryMethodTypes": ["SHIPPING"],
+        "expectedTotalPrice": {{"any": true}},
+        "destinationChanged": true
+      }}],
+      "noDeliveryRequired": [],
+      "useProgressiveRates": false,
+      "prefetchShippingRatesStrategy": null,
+      "supportsSplitShipping": true
+    }},
+    "deliveryExpectations": {{"deliveryExpectationLines": []}},
+    "merchandise": {{
+      "merchandiseLines": [{{
+        "stableId": "{stable_id}",
+        "merchandise": {{
+          "productVariantReference": {{
+            "id": "gid://shopify/ProductVariantMerchandise/{variant_id}",
+            "variantId": "gid://shopify/ProductVariant/{variant_id}",
+            "properties": [], "sellingPlanId": null, "sellingPlanDigest": null
+          }}
+        }},
+        "quantity": {{"items": {{"value": 1}}}},
+        "expectedTotalPrice": {{"any": true}},
+        "lineComponentsSource": null, "lineComponents": []
+      }}]
+    }},
+    "memberships": {{"memberships": []}},
+    "payment": {{
+      "totalAmount": {{"any": true}},
+      "paymentLines": [],
+      "billingAddress": {{
+        "streetAddress": {{
+          "address1": "{addr.address1}",
+          "address2": "{addr.address2}",
+          "city": "{addr.city}",
+          "countryCode": "{addr.country_code}",
+          "postalCode": "{addr.postal_code}",
+          "firstName": "{addr.first_name}",
+          "lastName": "{addr.last_name}",
+          "zoneCode": "{addr.zone_code}",
+          "phone": "{addr.phone}"
+        }}
+      }}
+    }},
+    "buyerIdentity": {{
+      "customer": {{"presentmentCurrency": "USD", "countryCode": "US"}},
+      "email": "{email}",
+      "emailChanged": false,
+      "phoneCountryCode": "US",
+      "marketingConsent": [],
+      "shopPayOptInPhone": {{"countryCode": "US"}},
+      "rememberMe": false
+    }},
+    "tip": {{"tipLines": []}},
+    "poNumber": null,
+    "taxes": {{
+      "proposedAllocations": null,
+      "proposedTotalAmount": {{"any": true}},
+      "proposedTotalIncludedAmount": null,
+      "proposedMixedStateTotalAmount": null,
+      "proposedExemptions": []
+    }},
+    "note": {{"message": null, "customAttributes": []}},
+    "localizationExtension": {{"fields": []}},
+    "nonNegotiableTerms": null,
+    "scriptFingerprint": {{
+      "signature": null, "signatureUuid": null,
+      "lineItemScriptChanges": [], "paymentScriptChanges": [], "shippingScriptChanges": []
+    }},
+    "optionalDuties": {{"buyerRefusesDuties": false}},
+    "cartMetafields": []
+  }},
+  "operationName": "Proposal",
+  "id": "{proposal_id}"
+}}'''
+    gql_payload = patch_payload(gql_payload, currency, country)
+    resp = await client.post(
+        f"{shop_url}/checkouts/internal/graphql/persisted?operationName=Proposal",
+        data=gql_payload,
+        headers=_proposal_headers(shop_url, checkout_url, checkout_token, session_token, build_id, source_token),
+    )
+    if resp.status_code == 429:
+        raise Exception("returned 429")
+    if resp.status_code >= 500:
+        raise Exception(f"returned {resp.status_code}")
+    return resp.status_code, resp.text
+
+async def send_poll_for_receipt(client: AsyncTLSClient, shop_url: str, checkout_url: str, checkout_token: str, session_token: str, build_id: str, source_token: str, poll_id: str, receipt_id: str, receipt_session_token: str):
+    params = {
+        "operationName": "PollForReceipt",
+        "variables": json.dumps({"receiptId": receipt_id, "sessionToken": receipt_session_token}),
+        "id": poll_id,
+    }
+    full_url = f"{shop_url}/checkouts/internal/graphql/persisted?{urllib.parse.urlencode(params)}"
+    headers = _proposal_headers(shop_url, checkout_url, checkout_token, session_token, build_id, source_token)
+    headers["x-checkout-web-source-id"] = checkout_token
+    resp = await client.get(full_url, headers=headers)
+    return resp.status_code, resp.text
+
+async def send_submit_for_completion(client: AsyncTLSClient, shop_url: str, checkout_url: str, checkout_token: str, session_token: str, stable_id: str, variant_id: str, price: str, submit_id: str, build_id: str, source_token: str, queue_token: str, email: str, addr: Address, delivery_handle: str, shipping_amount: str, total_amount: str, pci_session_id: str, attempt_token: str, currency: str, country: str, signed_handles, is_digital: bool = False, item_amount: str = None, tax_amount: str = None):
+    handle_lines = [json.dumps({"signedHandle": h}) for h in (signed_handles or [])]
+    signed_handles_json = "[" + ",".join(handle_lines) + "]"
+    page_id = generate_page_id()
+    if is_digital:
+        total_amount_block = '"totalAmount": {"any": true}'
+    else:
+        total_amount_block = f'"totalAmount": {{"value": {{"amount": "{total_amount}", "currencyCode": "USD"}}}}'
+    if is_digital:
+        delivery_block = f'''
+      "delivery": {{
+        "deliveryLines": [{{
+          "selectedDeliveryStrategy": {{
+            "deliveryStrategyMatchingConditions": {{
+              "estimatedTimeInTransit": {{"any": true}},
+              "shipments": {{"any": true}}
+            }},
+            "options": {{}}
+          }},
+          "targetMerchandiseLines": {{"lines": [{{"stableId": "{stable_id}"}}]}},
+          "deliveryMethodTypes": ["NONE"],
+          "expectedTotalPrice": {{"any": true}},
+          "destinationChanged": true
+        }}],
+        "noDeliveryRequired": [],
+        "useProgressiveRates": false,
+        "prefetchShippingRatesStrategy": null,
+        "supportsSplitShipping": true
+      }},
+      "deliveryExpectations": {{"deliveryExpectationLines": []}}'''
+    else:
+        delivery_block = f'''
+      "delivery": {{
+        "deliveryLines": [{{
+          "destination": {{
+            "streetAddress": {{
+              "address1": "{addr.address1}",
+              "address2": "{addr.address2}",
+              "city": "{addr.city}",
+              "countryCode": "{addr.country_code}",
+              "postalCode": "{addr.postal_code}",
+              "firstName": "{addr.first_name}",
+              "lastName": "{addr.last_name}",
+              "zoneCode": "{addr.zone_code}",
+              "phone": "{addr.phone}",
+              "oneTimeUse": false
+            }}
+          }},
+          "selectedDeliveryStrategy": {{
+            "deliveryStrategyByHandle": {{
+              "handle": "{delivery_handle}",
+              "customDeliveryRate": false
+            }},
+            "options": {{}}
+          }},
+          "targetMerchandiseLines": {{"lines": [{{"stableId": "{stable_id}"}}]}},
+          "deliveryMethodTypes": ["SHIPPING"],
+          "expectedTotalPrice": {{"any": true}},
+          "destinationChanged": false
+        }}],
+        "noDeliveryRequired": [],
+        "useProgressiveRates": false,
+        "prefetchShippingRatesStrategy": null,
+        "supportsSplitShipping": true
+      }},
+      "deliveryExpectations": {{"deliveryExpectationLines": {signed_handles_json}}}'''
+    tax_val = tax_amount or "0.0"
+    tax_block = f'"proposedTotalAmount": {{"value": {{"amount": "{tax_val}", "currencyCode": "USD"}}}}'
+    gql_payload = f'''{{
+  "variables": {{
+    "input": {{
+      "sessionInput": {{"sessionToken": "{session_token}"}},
+      "queueToken": "{queue_token}",
+      "discounts": {{"lines": [], "acceptUnexpectedDiscounts": true}},
+      {delivery_block},
+      "merchandise": {{
+        "merchandiseLines": [{{
+          "stableId": "{stable_id}",
+          "merchandise": {{
+            "productVariantReference": {{
+              "id": "gid://shopify/ProductVariantMerchandise/{variant_id}",
+              "variantId": "gid://shopify/ProductVariant/{variant_id}",
+              "properties": [], "sellingPlanId": null, "sellingPlanDigest": null
+            }}
+          }},
+          "quantity": {{"items": {{"value": 1}}}},
+          "expectedTotalPrice": {{"any": true}},
+          "lineComponentsSource": null, "lineComponents": []
+        }}]
+      }},
+      "memberships": {{"memberships": []}},
+      "payment": {{
+        {total_amount_block},
+        "paymentLines": [{{
+          "paymentMethod": {{
+            "directPaymentMethod": {{
+              "sessionId": "{pci_session_id}",
+              "billingAddress": {{
+                "streetAddress": {{
+                  "address1": "{addr.address1}",
+                  "address2": "{addr.address2}",
+                  "city": "{addr.city}",
+                  "countryCode": "{addr.country_code}",
+                  "postalCode": "{addr.postal_code}",
+                  "firstName": "{addr.first_name}",
+                  "lastName": "{addr.last_name}",
+                  "zoneCode": "{addr.zone_code}",
+                  "phone": "{addr.phone}"
+                }}
+              }},
+              "cardSource": null
+            }},
+            "giftCardPaymentMethod": null,
+            "redeemablePaymentMethod": null,
+            "walletPaymentMethod": null,
+            "walletsPlatformPaymentMethod": null,
+            "localPaymentMethod": null,
+            "paymentOnDeliveryMethod": null,
+            "paymentOnDeliveryMethod2": null,
+            "manualPaymentMethod": null,
+            "customPaymentMethod": null,
+            "offsitePaymentMethod": null,
+            "customOnsitePaymentMethod": null,
+            "deferredPaymentMethod": null,
+            "customerCreditCardPaymentMethod": null,
+            "paypalBillingAgreementPaymentMethod": null,
+            "remotePaymentInstrument": null
+          }},
+          "amount": {{"value": {{"amount": "{total_amount}", "currencyCode": "USD"}}}}
+        }}],
+        "billingAddress": {{
+          "streetAddress": {{
+            "address1": "{addr.address1}",
+            "address2": "{addr.address2}",
+            "city": "{addr.city}",
+            "countryCode": "{addr.country_code}",
+            "postalCode": "{addr.postal_code}",
+            "firstName": "{addr.first_name}",
+            "lastName": "{addr.last_name}",
+            "zoneCode": "{addr.zone_code}",
+            "phone": "{addr.phone}"
+          }}
+        }}
+      }},
+      "buyerIdentity": {{
+        "customer": {{"presentmentCurrency": "USD", "countryCode": "US"}},
+        "email": "{email}",
+        "emailChanged": false,
+        "phoneCountryCode": "US",
+        "marketingConsent": [],
+        "shopPayOptInPhone": {{"countryCode": "US"}},
+        "rememberMe": false
+      }},
+      "tip": {{"tipLines": []}},
+      "poNumber": null,
+      "taxes": {{
+        "proposedAllocations": null,
+        {tax_block},
+        "proposedTotalIncludedAmount": null,
+        "proposedMixedStateTotalAmount": null,
+        "proposedExemptions": []
+      }},
+      "note": {{"message": null, "customAttributes": []}},
+      "localizationExtension": {{"fields": []}},
+      "nonNegotiableTerms": null,
+      "scriptFingerprint": {{
+        "signature": null, "signatureUuid": null,
+        "lineItemScriptChanges": [], "paymentScriptChanges": [], "shippingScriptChanges": []
+      }},
+      "optionalDuties": {{"buyerRefusesDuties": false}},
+      "cartMetafields": []
+    }},
+    "attemptToken": "{attempt_token}",
+    "metafields": [],
+    "analytics": {{
+      "requestUrl": "{checkout_url}",
+      "pageId": "{page_id}"
+    }}
+  }},
+  "operationName": "SubmitForCompletion",
+  "id": "{submit_id}"
+}}'''
+    gql_payload = patch_payload(gql_payload, currency, country)
+    resp = await client.post(
+        f"{shop_url}/checkouts/internal/graphql/persisted?operationName=SubmitForCompletion",
+        data=gql_payload,
+        headers=_proposal_headers(shop_url, checkout_url, checkout_token, session_token, build_id, source_token),
+    )
+    if resp.status_code == 429:
+        raise Exception("returned 429")
+    if resp.status_code >= 500:
+        raise Exception(f"returned {resp.status_code}")
+    return resp.status_code, resp.text
+
+async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url: str = "", max_price: float = 20.0) -> CheckResult:
     currency = "USD"
     country = "US"
     site_name = shop_url.replace("https://", "").replace("http://", "")
@@ -237,7 +910,7 @@ async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url:
     
     try:
         try:
-            title, product_id, product_handle, variant_id, price = await find_cheapest_product_async(
+            title, product_id, product_handle, variant_id, price = await find_cheapest_product(
                 client, shop_url,
                 min_price=0.50,
                 max_price=max_price
@@ -250,7 +923,7 @@ async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url:
             return result
 
         try:
-            checkout_url, checkout_token, session_token, checkout_html = await add_to_cart_and_checkout_async(client, shop_url, variant_id, product_id, product_handle)
+            checkout_url, checkout_token, session_token, checkout_html = await add_to_cart_and_checkout(client, shop_url, variant_id, product_id, product_handle)
             stable_id = extract_stable_id(checkout_html)
             build_id = extract_commit_sha(checkout_html)
             source_token = extract_source_token(checkout_html)
@@ -266,7 +939,7 @@ async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url:
             pat_id = extract_private_access_token_id(checkout_html)
             if not pat_id:
                 raise Exception("could not extract private_access_token id")
-            await fetch_private_access_token_async(client, shop_url, checkout_url, pat_id)
+            await fetch_private_access_token(client, shop_url, checkout_url, pat_id)
         except Exception as e:
             result.status = CheckStatus.ERROR
             result.retryable = True
@@ -277,7 +950,7 @@ async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url:
             actions_url = extract_actions_js_url(checkout_html, shop_url)
             if not actions_url:
                 raise Exception("could not find actions JS URL")
-            js_body = await fetch_actions_js_async(client, actions_url, shop_url)
+            js_body = await fetch_actions_js(client, actions_url, shop_url)
             proposal_id = extract_proposal_id(js_body)
             submit_id = extract_submit_for_completion_id(js_body)
             if not proposal_id or not submit_id:
@@ -290,7 +963,7 @@ async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url:
             return result
 
         try:
-            _, proposal_body = await send_proposal_async(client, shop_url, checkout_url, checkout_token, session_token, stable_id, variant_id, price, proposal_id, build_id, source_token, currency, country)
+            _, proposal_body = await send_proposal(client, shop_url, checkout_url, checkout_token, session_token, stable_id, variant_id, price, proposal_id, build_id, source_token, currency, country)
             cur = extract_seller_currency(proposal_body)
             if cur and cur != currency:
                 currency = cur
@@ -311,7 +984,7 @@ async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url:
             return result
 
         try:
-            _, proposal2_body = await send_proposal2_async(client, shop_url, checkout_url, checkout_token, session_token, stable_id, variant_id, price, proposal_id, build_id, source_token, queue_token, email, currency, country)
+            _, proposal2_body = await send_proposal2(client, shop_url, checkout_url, checkout_token, session_token, stable_id, variant_id, price, proposal_id, build_id, source_token, queue_token, email, currency, country)
             queue_token2 = extract_queue_token(proposal2_body)
             if not queue_token2:
                 raise Exception("could not extract queueToken")
@@ -322,7 +995,7 @@ async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url:
 
         try:
             addr = address_for_country(country)
-            _, proposal3_body = await send_proposal3_async(client, shop_url, checkout_url, checkout_token, session_token, stable_id, variant_id, price, proposal_id, build_id, source_token, queue_token2, email, addr, currency, country)
+            _, proposal3_body = await send_proposal3(client, shop_url, checkout_url, checkout_token, session_token, stable_id, variant_id, price, proposal_id, build_id, source_token, queue_token2, email, addr, currency, country)
             queue_token3 = extract_queue_token(proposal3_body)
             if not queue_token3:
                 raise Exception("could not extract queueToken")
@@ -332,7 +1005,7 @@ async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url:
             return result
 
         try:
-            _, proposal4_body = await send_proposal3_async(client, shop_url, checkout_url, checkout_token, session_token, stable_id, variant_id, price, proposal_id, build_id, source_token, queue_token3, email, addr, currency, country)
+            _, proposal4_body = await send_proposal3(client, shop_url, checkout_url, checkout_token, session_token, stable_id, variant_id, price, proposal_id, build_id, source_token, queue_token3, email, addr, currency, country)
             queue_token4 = extract_queue_token(proposal4_body)
             if not queue_token4:
                 raise Exception("could not extract queueToken")
@@ -342,7 +1015,7 @@ async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url:
             return result
 
         try:
-            proposal5_status, proposal5_body = await send_proposal3_async(client, shop_url, checkout_url, checkout_token, session_token, stable_id, variant_id, price, proposal_id, build_id, source_token, queue_token4, email, addr, currency, country)
+            proposal5_status, proposal5_body = await send_proposal3(client, shop_url, checkout_url, checkout_token, session_token, stable_id, variant_id, price, proposal_id, build_id, source_token, queue_token4, email, addr, currency, country)
             _ = proposal5_status
         except Exception as e:
             result.status = CheckStatus.ERROR
@@ -353,7 +1026,7 @@ async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url:
             ident_sig = extract_identification_signature(checkout_html)
             if not ident_sig:
                 raise Exception("could not extract identification signature")
-            pci_status, pci_body = await send_pci_session_async(ident_sig, card_number, f"{addr.first_name} {addr.last_name}", card_month, card_year, card_cvv, site_name, proxy_url)
+            pci_status, pci_body = await send_pci_session(ident_sig, card_number, f"{addr.first_name} {addr.last_name}", card_month, card_year, card_cvv, site_name, proxy_url)
             _ = pci_status
             pci_session_id = extract_pci_session_id(pci_body)
             if not pci_session_id:
@@ -395,7 +1068,7 @@ async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url:
             current_total = total_amount
 
             for tax_attempt in range(1, 2):
-                submit_status, submit_body = await send_submit_for_completion_async(client, shop_url, checkout_url, checkout_token, session_token, stable_id, variant_id, price, submit_id, build_id, source_token, queue_token5, email, addr, delivery_handle, shipping_amount, current_total, pci_session_id, attempt_token, currency, country, signed_handles, is_digital=is_digital, tax_amount=current_tax)
+                submit_status, submit_body = await send_submit_for_completion(client, shop_url, checkout_url, checkout_token, session_token, stable_id, variant_id, price, submit_id, build_id, source_token, queue_token5, email, addr, delivery_handle, shipping_amount, current_total, pci_session_id, attempt_token, currency, country, signed_handles, is_digital=is_digital, tax_amount=current_tax)
                 if "TAX_NEW_TAX_MUST_BE_ACCEPTED" in submit_body:
                     new_tax = extract_tax_from_rejected(submit_body)
                     new_total = extract_total_from_rejected(submit_body)
@@ -436,7 +1109,7 @@ async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url:
 
         for poll_num in range(1, 5):
             try:
-                _, poll_body = await send_poll_for_receipt_async(client, shop_url, checkout_url, checkout_token, session_token, build_id, source_token, poll_for_receipt_id, receipt_id, receipt_session_token)
+                _, poll_body = await send_poll_for_receipt(client, shop_url, checkout_url, checkout_token, session_token, build_id, source_token, poll_for_receipt_id, receipt_id, receipt_session_token)
                 receipt_type = ""
                 m = type_name_re.search(poll_body)
                 if m:
@@ -500,100 +1173,3 @@ async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url:
         return result
     finally:
         await client.close()
-
-# ===== دوال Async التي تستخدم run_in_executor =====
-
-async def send_proposal_async(client: AsyncTLSClient, shop_url: str, checkout_url: str, checkout_token: str,
-                  session_token: str, stable_id: str, variant_id: str, price: str,
-                  proposal_id: str, build_id: str, source_token: str,
-                  currency: str, country: str):
-    from auto import send_proposal as sync_send_proposal
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: sync_send_proposal(
-            client, shop_url, checkout_url, checkout_token, session_token,
-            stable_id, variant_id, price, proposal_id, build_id, source_token,
-            currency, country
-        )
-    )
-    return result
-
-async def send_proposal2_async(client: AsyncTLSClient, shop_url: str, checkout_url: str, checkout_token: str,
-                   session_token: str, stable_id: str, variant_id: str, price: str,
-                   proposal_id: str, build_id: str, source_token: str, queue_token: str,
-                   email: str, currency: str, country: str):
-    from auto import send_proposal2 as sync_send_proposal2
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: sync_send_proposal2(
-            client, shop_url, checkout_url, checkout_token, session_token,
-            stable_id, variant_id, price, proposal_id, build_id, source_token,
-            queue_token, email, currency, country
-        )
-    )
-    return result
-
-async def send_proposal3_async(client: AsyncTLSClient, shop_url: str, checkout_url: str, checkout_token: str,
-                   session_token: str, stable_id: str, variant_id: str, price: str,
-                   proposal_id: str, build_id: str, source_token: str, queue_token: str,
-                   email: str, addr: Address, currency: str, country: str):
-    from auto import send_proposal3 as sync_send_proposal3
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: sync_send_proposal3(
-            client, shop_url, checkout_url, checkout_token, session_token,
-            stable_id, variant_id, price, proposal_id, build_id, source_token,
-            queue_token, email, addr, currency, country
-        )
-    )
-    return result
-
-async def send_poll_for_receipt_async(client: AsyncTLSClient, shop_url: str, checkout_url: str, checkout_token: str,
-                          session_token: str, build_id: str, source_token: str,
-                          poll_id: str, receipt_id: str, receipt_session_token: str):
-    from auto import send_poll_for_receipt as sync_send_poll_for_receipt
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: sync_send_poll_for_receipt(
-            client, shop_url, checkout_url, checkout_token, session_token,
-            build_id, source_token, poll_id, receipt_id, receipt_session_token
-        )
-    )
-    return result
-
-async def send_submit_for_completion_async(client: AsyncTLSClient, shop_url: str, checkout_url: str, checkout_token: str,
-                               session_token: str, stable_id: str, variant_id: str, price: str,
-                               submit_id: str, build_id: str, source_token: str, queue_token: str,
-                               email: str, addr: Address, delivery_handle: str, shipping_amount: str,
-                               total_amount: str, pci_session_id: str, attempt_token: str,
-                               currency: str, country: str, signed_handles: List[str],
-                               is_digital: bool = False,
-                               tax_amount: str = None):
-    from auto import send_submit_for_completion as sync_send_submit_for_completion
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: sync_send_submit_for_completion(
-            client, shop_url, checkout_url, checkout_token, session_token,
-            stable_id, variant_id, price, submit_id, build_id, source_token,
-            queue_token, email, addr, delivery_handle, shipping_amount,
-            total_amount, pci_session_id, attempt_token, currency, country,
-            signed_handles, is_digital, tax_amount
-        )
-    )
-    return result
-
-async def send_pci_session_async(ident_sig: str, card_number: str, card_name: str, card_month: int, card_year: int, cvv: str, shop_domain: str, proxy_url: str = ""):
-    from auto import send_pci_session as sync_send_pci_session
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: sync_send_pci_session(
-            ident_sig, card_number, card_name, card_month, card_year, cvv, shop_domain, proxy_url
-        )
-    )
-    return result
