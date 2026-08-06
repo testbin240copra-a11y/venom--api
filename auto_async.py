@@ -1,4 +1,4 @@
-# auto_async.py - نسخة معدلة للعمل مع auto.py الجديد
+# auto_async.py - النسخة الكاملة المعدلة للتناسق مع auto.py
 
 from __future__ import annotations
 
@@ -25,7 +25,6 @@ _auto = importlib.util.module_from_spec(_spec)
 assert _spec.loader is not None
 _spec.loader.exec_module(_auto)
 
-# استيراد كل حاجة من auto.py
 CheckStatus = _auto.CheckStatus
 CheckResult = _auto.CheckResult
 Address = _auto.Address
@@ -129,12 +128,9 @@ def _is_cf_body(body: str) -> bool:
     lo = body.lower()
     return "1003" in body or "cloudflare" in lo or "cf_managed_challenge" in lo or "challenge" in lo
 
+# ===== البحث عن المنتج باستخدام auto.py =====
 async def find_cheapest_product_async(client: AsyncTLSClient, shop_url: str, min_price: float = MIN_PRODUCT_PRICE, max_price: float = MAX_PRODUCT_PRICE):
-    """نسخة Async من find_cheapest_product - تستخدم auto.py"""
-    import asyncio
     from auto import find_cheapest_product as sync_find
-    
-    # تشغيل الدالة المتزامنة في thread منفصل
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(
         None,
@@ -211,102 +207,15 @@ async def fetch_actions_js_async(client: AsyncTLSClient, actions_url: str, shop_
         raise Exception(f"GET actions JS returned {resp.status_code}")
     return resp.text
 
-# ===== الدوال الرئيسية - تستخدم run_in_executor للدوال المتزامنة =====
-
-async def send_proposal_async(client: AsyncTLSClient, shop_url: str, checkout_url: str, checkout_token: str,
-                  session_token: str, stable_id: str, variant_id: str, price: str,
-                  proposal_id: str, build_id: str, source_token: str,
-                  currency: str, country: str):
-    from auto import send_proposal as sync_send_proposal
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: sync_send_proposal(
-            client, shop_url, checkout_url, checkout_token, session_token,
-            stable_id, variant_id, price, proposal_id, build_id, source_token,
-            currency, country
-        )
-    )
-    return result
-
-async def send_proposal2_async(client: AsyncTLSClient, shop_url: str, checkout_url: str, checkout_token: str,
-                   session_token: str, stable_id: str, variant_id: str, price: str,
-                   proposal_id: str, build_id: str, source_token: str, queue_token: str,
-                   email: str, currency: str, country: str):
-    from auto import send_proposal2 as sync_send_proposal2
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: sync_send_proposal2(
-            client, shop_url, checkout_url, checkout_token, session_token,
-            stable_id, variant_id, price, proposal_id, build_id, source_token,
-            queue_token, email, currency, country
-        )
-    )
-    return result
-
-async def send_proposal3_async(client: AsyncTLSClient, shop_url: str, checkout_url: str, checkout_token: str,
-                   session_token: str, stable_id: str, variant_id: str, price: str,
-                   proposal_id: str, build_id: str, source_token: str, queue_token: str,
-                   email: str, addr: Address, currency: str, country: str):
-    from auto import send_proposal3 as sync_send_proposal3
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: sync_send_proposal3(
-            client, shop_url, checkout_url, checkout_token, session_token,
-            stable_id, variant_id, price, proposal_id, build_id, source_token,
-            queue_token, email, addr, currency, country
-        )
-    )
-    return result
-
-async def send_poll_for_receipt_async(client: AsyncTLSClient, shop_url: str, checkout_url: str, checkout_token: str,
-                          session_token: str, build_id: str, source_token: str,
-                          poll_id: str, receipt_id: str, receipt_session_token: str):
-    from auto import send_poll_for_receipt as sync_send_poll_for_receipt
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: sync_send_poll_for_receipt(
-            client, shop_url, checkout_url, checkout_token, session_token,
-            build_id, source_token, poll_id, receipt_id, receipt_session_token
-        )
-    )
-    return result
-
-async def send_submit_for_completion_async(client: AsyncTLSClient, shop_url: str, checkout_url: str, checkout_token: str,
-                               session_token: str, stable_id: str, variant_id: str, price: str,
-                               submit_id: str, build_id: str, source_token: str, queue_token: str,
-                               email: str, addr: Address, delivery_handle: str, shipping_amount: str,
-                               total_amount: str, pci_session_id: str, attempt_token: str,
-                               currency: str, country: str, signed_handles: List[str],
-                               is_digital: bool = False,
-                               tax_amount: str = None):
-    from auto import send_submit_for_completion as sync_send_submit_for_completion
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: sync_send_submit_for_completion(
-            client, shop_url, checkout_url, checkout_token, session_token,
-            stable_id, variant_id, price, submit_id, build_id, source_token,
-            queue_token, email, addr, delivery_handle, shipping_amount,
-            total_amount, pci_session_id, attempt_token, currency, country,
-            signed_handles, is_digital, tax_amount
-        )
-    )
-    return result
-
-async def send_pci_session_async(ident_sig: str, card_number: str, card_name: str, card_month: int, card_year: int, cvv: str, shop_domain: str, proxy_url: str = ""):
-    from auto import send_pci_session as sync_send_pci_session
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: sync_send_pci_session(
-            ident_sig, card_number, card_name, card_month, card_year, cvv, shop_domain, proxy_url
-        )
-    )
-    return result
+# ===== استيراد الدوال من auto.py =====
+from auto import (
+    send_proposal,
+    send_proposal2,
+    send_proposal3,
+    send_poll_for_receipt,
+    send_submit_for_completion,
+    send_pci_session,
+)
 
 # ===== الدالة الرئيسية =====
 async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url: str = "", max_price: float = 30.0) -> CheckResult:
@@ -591,3 +500,100 @@ async def run_checkout_for_card_async(shop_url: str, card_entry: str, proxy_url:
         return result
     finally:
         await client.close()
+
+# ===== دوال Async التي تستخدم run_in_executor =====
+
+async def send_proposal_async(client: AsyncTLSClient, shop_url: str, checkout_url: str, checkout_token: str,
+                  session_token: str, stable_id: str, variant_id: str, price: str,
+                  proposal_id: str, build_id: str, source_token: str,
+                  currency: str, country: str):
+    from auto import send_proposal as sync_send_proposal
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: sync_send_proposal(
+            client, shop_url, checkout_url, checkout_token, session_token,
+            stable_id, variant_id, price, proposal_id, build_id, source_token,
+            currency, country
+        )
+    )
+    return result
+
+async def send_proposal2_async(client: AsyncTLSClient, shop_url: str, checkout_url: str, checkout_token: str,
+                   session_token: str, stable_id: str, variant_id: str, price: str,
+                   proposal_id: str, build_id: str, source_token: str, queue_token: str,
+                   email: str, currency: str, country: str):
+    from auto import send_proposal2 as sync_send_proposal2
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: sync_send_proposal2(
+            client, shop_url, checkout_url, checkout_token, session_token,
+            stable_id, variant_id, price, proposal_id, build_id, source_token,
+            queue_token, email, currency, country
+        )
+    )
+    return result
+
+async def send_proposal3_async(client: AsyncTLSClient, shop_url: str, checkout_url: str, checkout_token: str,
+                   session_token: str, stable_id: str, variant_id: str, price: str,
+                   proposal_id: str, build_id: str, source_token: str, queue_token: str,
+                   email: str, addr: Address, currency: str, country: str):
+    from auto import send_proposal3 as sync_send_proposal3
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: sync_send_proposal3(
+            client, shop_url, checkout_url, checkout_token, session_token,
+            stable_id, variant_id, price, proposal_id, build_id, source_token,
+            queue_token, email, addr, currency, country
+        )
+    )
+    return result
+
+async def send_poll_for_receipt_async(client: AsyncTLSClient, shop_url: str, checkout_url: str, checkout_token: str,
+                          session_token: str, build_id: str, source_token: str,
+                          poll_id: str, receipt_id: str, receipt_session_token: str):
+    from auto import send_poll_for_receipt as sync_send_poll_for_receipt
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: sync_send_poll_for_receipt(
+            client, shop_url, checkout_url, checkout_token, session_token,
+            build_id, source_token, poll_id, receipt_id, receipt_session_token
+        )
+    )
+    return result
+
+async def send_submit_for_completion_async(client: AsyncTLSClient, shop_url: str, checkout_url: str, checkout_token: str,
+                               session_token: str, stable_id: str, variant_id: str, price: str,
+                               submit_id: str, build_id: str, source_token: str, queue_token: str,
+                               email: str, addr: Address, delivery_handle: str, shipping_amount: str,
+                               total_amount: str, pci_session_id: str, attempt_token: str,
+                               currency: str, country: str, signed_handles: List[str],
+                               is_digital: bool = False,
+                               tax_amount: str = None):
+    from auto import send_submit_for_completion as sync_send_submit_for_completion
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: sync_send_submit_for_completion(
+            client, shop_url, checkout_url, checkout_token, session_token,
+            stable_id, variant_id, price, submit_id, build_id, source_token,
+            queue_token, email, addr, delivery_handle, shipping_amount,
+            total_amount, pci_session_id, attempt_token, currency, country,
+            signed_handles, is_digital, tax_amount
+        )
+    )
+    return result
+
+async def send_pci_session_async(ident_sig: str, card_number: str, card_name: str, card_month: int, card_year: int, cvv: str, shop_domain: str, proxy_url: str = ""):
+    from auto import send_pci_session as sync_send_pci_session
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: sync_send_pci_session(
+            ident_sig, card_number, card_name, card_month, card_year, cvv, shop_domain, proxy_url
+        )
+    )
+    return result
