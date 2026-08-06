@@ -1,3 +1,5 @@
+# auto.py - النسخة الكاملة (12 طريقة للبحث)
+
 import json
 import random
 import re
@@ -245,13 +247,13 @@ MAX_PRODUCT_PRICE = 30.0
 MIN_PRODUCT_PRICE = 0.50
 
 # =============================================================
-#  7 طرق مختلفة للبحث عن المنتج
+#  12 طريقة مختلفة للبحث عن المنتج
 # =============================================================
 
 def _find_product_products_json(client: TLSClient, shop_url: str, min_price: float, max_price: float) -> Optional[Tuple[str, str, str, str]]:
     """الطريقة 1: البحث من /products.json"""
     try:
-        resp = client.get(f"{shop_url}/products.json?limit=50")
+        resp = client.get(f"{shop_url}/products.json?limit=250")
         if resp.status_code != 200:
             return None
         try:
@@ -288,7 +290,7 @@ def _find_product_products_json(client: TLSClient, shop_url: str, min_price: flo
 def _find_product_collections(client: TLSClient, shop_url: str, min_price: float, max_price: float) -> Optional[Tuple[str, str, str, str]]:
     """الطريقة 2: البحث من /collections/all/products.json"""
     try:
-        resp = client.get(f"{shop_url}/collections/all/products.json?limit=50")
+        resp = client.get(f"{shop_url}/collections/all/products.json?limit=250")
         if resp.status_code != 200:
             return None
         try:
@@ -332,7 +334,7 @@ def _find_product_homepage(client: TLSClient, shop_url: str, min_price: float, m
         
         product_links = re.findall(r'href="([^"]*\/products\/[^"]+)"', html)
         
-        for link in product_links[:10]:
+        for link in product_links[:20]:
             try:
                 if not link.startswith('http'):
                     link = shop_url + link
@@ -397,7 +399,7 @@ def _find_product_sitemap(client: TLSClient, shop_url: str, min_price: float, ma
         sitemap = resp.text
         product_urls = re.findall(r'<loc>([^<]*\/products\/[^<]+)<\/loc>', sitemap)
         
-        for url in product_urls[:10]:
+        for url in product_urls[:30]:
             try:
                 handle_match = re.search(r'/products/([^/?]+)', url)
                 if handle_match:
@@ -429,9 +431,8 @@ def _find_product_by_handle(client: TLSClient, shop_url: str, min_price: float, 
             return None
         html = resp.text
         
-        # البحث عن handles من الروابط
         handles = re.findall(r'/products/([^/?"]+)', html)
-        for handle in set(handles[:10]):
+        for handle in set(handles[:20]):
             try:
                 resp = client.get(f"{shop_url}/products/{handle}.json")
                 if resp.status_code == 200:
@@ -452,7 +453,7 @@ def _find_product_by_handle(client: TLSClient, shop_url: str, min_price: float, 
     except:
         return None
 
-def _find_any_product(client: TLSClient, shop_url: str, min_price: float, max_price: float) -> Optional[Tuple[str, str, str, str]]:
+def _find_product_any(client: TLSClient, shop_url: str, min_price: float, max_price: float) -> Optional[Tuple[str, str, str, str]]:
     """الطريقة 7: البحث عن أي منتج من /products.json بدون شروط"""
     try:
         resp = client.get(f"{shop_url}/products.json?limit=10")
@@ -475,8 +476,265 @@ def _find_any_product(client: TLSClient, shop_url: str, min_price: float, max_pr
     except:
         return None
 
+def _find_product_graphql(client: TLSClient, shop_url: str, min_price: float, max_price: float) -> Optional[Tuple[str, str, str, str]]:
+    """الطريقة 8: البحث باستخدام GraphQL"""
+    try:
+        query = """
+        {
+          products(first: 50, sortKey: PRICE) {
+            edges {
+              node {
+                id
+                title
+                variants(first: 10) {
+                  edges {
+                    node {
+                      id
+                      price
+                      availableForSale
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+        resp = client.post(
+            f"{shop_url}/api/graphql.json",
+            json={"query": query},
+            headers={"Content-Type": "application/json"}
+        )
+        if resp.status_code == 200:
+            try:
+                data = resp.json()
+                products = data.get("data", {}).get("products", {}).get("edges", [])
+                
+                best_in_range = None
+                best_in_range_price = float('inf')
+                cheapest_overall = None
+                cheapest_overall_price = float('inf')
+                
+                for edge in products:
+                    p = edge.get("node", {})
+                    variants = p.get("variants", {}).get("edges", [])
+                    
+                    for v_edge in variants:
+                        v = v_edge.get("node", {})
+                        if not v.get("availableForSale", False):
+                            continue
+                        try:
+                            price = float(v.get("price") or 0)
+                        except:
+                            continue
+                        if price < min_price:
+                            continue
+                        if price <= max_price and price < best_in_range_price:
+                            best_in_range_price = price
+                            product_id = p.get("id", "").split("/")[-1]
+                            variant_id = v.get("id", "").split("/")[-1]
+                            best_in_range = (p.get("title", "Product"), product_id, variant_id, v.get("price", "0"))
+                        if price < cheapest_overall_price:
+                            cheapest_overall_price = price
+                            product_id = p.get("id", "").split("/")[-1]
+                            variant_id = v.get("id", "").split("/")[-1]
+                            cheapest_overall = (p.get("title", "Product"), product_id, variant_id, v.get("price", "0"))
+                
+                return best_in_range if best_in_range else cheapest_overall
+            except:
+                pass
+        return None
+    except:
+        return None
+
+def _find_product_storefront(client: TLSClient, shop_url: str, min_price: float, max_price: float) -> Optional[Tuple[str, str, str, str]]:
+    """الطريقة 9: البحث باستخدام Storefront API"""
+    try:
+        query = """
+        {
+          products(first: 50, sortKey: PRICE) {
+            edges {
+              node {
+                id
+                title
+                variants(first: 10) {
+                  edges {
+                    node {
+                      id
+                      priceV2 { amount }
+                      availableForSale
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+        resp = client.post(
+            f"{shop_url}/api/2024-01/graphql.json",
+            json={"query": query},
+            headers={"Content-Type": "application/json"}
+        )
+        if resp.status_code == 200:
+            try:
+                data = resp.json()
+                products = data.get("data", {}).get("products", {}).get("edges", [])
+                
+                best_in_range = None
+                best_in_range_price = float('inf')
+                cheapest_overall = None
+                cheapest_overall_price = float('inf')
+                
+                for edge in products:
+                    p = edge.get("node", {})
+                    variants = p.get("variants", {}).get("edges", [])
+                    
+                    for v_edge in variants:
+                        v = v_edge.get("node", {})
+                        if not v.get("availableForSale", False):
+                            continue
+                        try:
+                            price = float(v.get("priceV2", {}).get("amount", 0))
+                        except:
+                            continue
+                        if price < min_price:
+                            continue
+                        if price <= max_price and price < best_in_range_price:
+                            best_in_range_price = price
+                            product_id = p.get("id", "").split("/")[-1]
+                            variant_id = v.get("id", "").split("/")[-1]
+                            best_in_range = (p.get("title", "Product"), product_id, variant_id, str(price))
+                        if price < cheapest_overall_price:
+                            cheapest_overall_price = price
+                            product_id = p.get("id", "").split("/")[-1]
+                            variant_id = v.get("id", "").split("/")[-1]
+                            cheapest_overall = (p.get("title", "Product"), product_id, variant_id, str(price))
+                
+                return best_in_range if best_in_range else cheapest_overall
+            except:
+                pass
+        return None
+    except:
+        return None
+
+def _find_product_ajax(client: TLSClient, shop_url: str, min_price: float, max_price: float) -> Optional[Tuple[str, str, str, str]]:
+    """الطريقة 10: البحث باستخدام AJAX API"""
+    try:
+        resp = client.get(f"{shop_url}/products.json?limit=50&page=1")
+        if resp.status_code == 200:
+            try:
+                data = resp.json()
+                products = data.get("products", [])
+                
+                best_in_range = None
+                best_in_range_price = float('inf')
+                cheapest_overall = None
+                cheapest_overall_price = float('inf')
+                
+                for p in products:
+                    for v in p.get("variants", []):
+                        if not v.get("available", False):
+                            continue
+                        try:
+                            price = float(v.get("price") or 0)
+                        except:
+                            continue
+                        if price < min_price:
+                            continue
+                        if price <= max_price and price < best_in_range_price:
+                            best_in_range_price = price
+                            best_in_range = (p.get("title", "Product"), str(p.get("id", "")), str(v.get("id", "")), v.get("price", "0"))
+                        if price < cheapest_overall_price:
+                            cheapest_overall_price = price
+                            cheapest_overall = (p.get("title", "Product"), str(p.get("id", "")), str(v.get("id", "")), v.get("price", "0"))
+                
+                return best_in_range if best_in_range else cheapest_overall
+            except:
+                pass
+        return None
+    except:
+        return None
+
+def _find_product_recommendations(client: TLSClient, shop_url: str, min_price: float, max_price: float) -> Optional[Tuple[str, str, str, str]]:
+    """الطريقة 11: البحث من /recommendations/products.json"""
+    try:
+        resp = client.get(f"{shop_url}/recommendations/products.json")
+        if resp.status_code == 200:
+            try:
+                products = resp.json().get("products", [])
+                
+                best_in_range = None
+                best_in_range_price = float('inf')
+                cheapest_overall = None
+                cheapest_overall_price = float('inf')
+                
+                for p in products:
+                    for v in p.get("variants", []):
+                        if not v.get("available", False):
+                            continue
+                        try:
+                            price = float(v.get("price") or 0)
+                        except:
+                            continue
+                        if price < min_price:
+                            continue
+                        if price <= max_price and price < best_in_range_price:
+                            best_in_range_price = price
+                            best_in_range = (p.get("title", "Product"), str(p.get("id", "")), str(v.get("id", "")), v.get("price", "0"))
+                        if price < cheapest_overall_price:
+                            cheapest_overall_price = price
+                            cheapest_overall = (p.get("title", "Product"), str(p.get("id", "")), str(v.get("id", "")), v.get("price", "0"))
+                
+                return best_in_range if best_in_range else cheapest_overall
+            except:
+                pass
+        return None
+    except:
+        return None
+
+def _find_product_robots_txt(client: TLSClient, shop_url: str, min_price: float, max_price: float) -> Optional[Tuple[str, str, str, str]]:
+    """الطريقة 12: البحث من /robots.txt عن sitemap"""
+    try:
+        resp = client.get(f"{shop_url}/robots.txt")
+        if resp.status_code != 200:
+            return None
+        robots = resp.text
+        sitemap_urls = re.findall(r'Sitemap:\s*(.+)', robots, re.IGNORECASE)
+        
+        for sitemap_url in sitemap_urls:
+            if not sitemap_url.startswith('http'):
+                sitemap_url = shop_url + '/' + sitemap_url.lstrip('/')
+            resp = client.get(sitemap_url)
+            if resp.status_code == 200:
+                sitemap = resp.text
+                product_urls = re.findall(r'<loc>([^<]*\/products\/[^<]+)<\/loc>', sitemap)
+                for url in product_urls[:30]:
+                    try:
+                        handle_match = re.search(r'/products/([^/?]+)', url)
+                        if handle_match:
+                            handle = handle_match.group(1)
+                            resp = client.get(f"{shop_url}/products/{handle}.json")
+                            if resp.status_code == 200:
+                                data = resp.json()
+                                p = data.get("product", {})
+                                for v in p.get("variants", []):
+                                    if not v.get("available", False):
+                                        continue
+                                    try:
+                                        price = float(v.get("price") or 0)
+                                    except:
+                                        continue
+                                    if price >= min_price:
+                                        return (p.get("title", "Product"), str(p.get("id", "")), str(v.get("id", "")), v.get("price", "0"))
+                    except:
+                        continue
+        return None
+    except:
+        return None
+
 # =============================================================
-#  الدالة الرئيسية للبحث عن المنتج - تجمع كل الطرق
+#  الدالة الرئيسية للبحث عن المنتج - تجمع كل الطرق (12 طريقة)
 # =============================================================
 
 def find_cheapest_product(client: TLSClient, shop_url: str, min_price: float = MIN_PRODUCT_PRICE, max_price: float = MAX_PRODUCT_PRICE, fallback_sites: List[str] = None) -> Tuple[str, str, str, str]:
@@ -488,7 +746,7 @@ def find_cheapest_product(client: TLSClient, shop_url: str, min_price: float = M
         if cached and now - cached[-1] < _PRODUCT_CACHE_TTL:
             return cached[:-1]
     
-    # قائمة بكل طرق البحث - 7 طرق
+    # قائمة بكل طرق البحث - 12 طريقة
     search_methods = [
         _find_product_products_json,
         _find_product_collections,
@@ -496,7 +754,12 @@ def find_cheapest_product(client: TLSClient, shop_url: str, min_price: float = M
         _find_product_search,
         _find_product_sitemap,
         _find_product_by_handle,
-        _find_any_product,
+        _find_product_any,
+        _find_product_graphql,
+        _find_product_storefront,
+        _find_product_ajax,
+        _find_product_recommendations,
+        _find_product_robots_txt,
     ]
     
     # تجربة كل طريقة
